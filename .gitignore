@@ -1,0 +1,36 @@
+# Build artifacts
+Build/
+Bin/
+MyGame/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+Makefile.cmake
+Makefile2
+install_manifest.txt
+
+# Visual Studio / IDE
+.vs/
+.vscode/
+.VSCodeCounter/
+*.vcxproj*
+*.sln
+*.user
+
+# Temporary files
+*.obj
+*.o
+*.exe
+*.dll
+*.so
+*.dylib
+*.pdb
+*.ilk
+*.log
+
+# Editor files
+*~
+*.swp
