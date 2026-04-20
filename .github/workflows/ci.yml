@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Init required submodules
+        shell: bash
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --depth 1 ThirdParty/glfw ThirdParty/glad ThirdParty/glm ThirdParty/imgui ThirdParty/stb
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxi-dev libxcursor-dev libglu1-mesa-dev
+
+      - name: Install Python deps for glad
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install jinja2
+
+      - name: Configure
+        id: configure
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p Build
+          cmake -S . -B Build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DPython_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')" -DPython3_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')" 2>&1 | tee Build/configure.log
+
+      - name: Dump configure logs on failure
+        if: steps.configure.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::group::CMakeError.log"
+          if [ -f Build/CMakeFiles/CMakeError.log ]; then
+            cat Build/CMakeFiles/CMakeError.log
+          else
+            echo "Build/CMakeFiles/CMakeError.log not found"
+          fi
+          echo "::endgroup::"
+          echo "::group::CMakeOutput.log"
+          if [ -f Build/CMakeFiles/CMakeOutput.log ]; then
+            tail -n 200 Build/CMakeFiles/CMakeOutput.log || true
+          else
+            echo "Build/CMakeFiles/CMakeOutput.log not found"
+          fi
+          echo "::endgroup::"
+          if [ -f Build/CMakeFiles/CMakeError.log ]; then
+            err_tail=$(tail -n 40 Build/CMakeFiles/CMakeError.log | tr '\n' ';')
+            echo "::error::CMakeError tail: ${err_tail}"
+          fi
+          if [ -f Build/configure.log ]; then
+            cfg_tail=$(tail -n 80 Build/configure.log | tr '\n' ';')
+            echo "::error::Configure log tail: ${cfg_tail}"
+          fi
+
+      - name: Fail if configure failed
+        if: steps.configure.outcome == 'failure'
+        run: |
+          echo "::error::CMake configure failed. See grouped logs above."
+          exit 1
+
+      - name: Build
+        id: build
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build Build --config Release --parallel 2>&1 | tee Build/build.log
+
+      - name: Dump build logs on failure
+        if: steps.build.outcome == 'failure'
+        shell: bash
+        run: |
+          set +e
+          if [ -f Build/build.log ]; then
+            err_lines=$(grep -Ei "error C[0-9]+|fatal error C[0-9]+|LNK[0-9]+| fatal error:| error:" Build/build.log | tail -n 80 | tr -d '\r' | tr '\n' ';' || true)
+            if [ -n "${err_lines}" ]; then
+              echo "::error::Build error lines: ${err_lines}"
+            fi
+            bld_tail=$(tail -n 200 Build/build.log | tr -d '\r' | tr '\n' ';' || true)
+            echo "::error::Build log tail: ${bld_tail}"
+          else
+            echo "::error::Build failed and Build/build.log was not found"
+          fi
+
+      - name: Fail if build failed
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "::error::CMake build failed. See build log tail above."
+          exit 1
+
+      - name: List binaries
+        shell: bash
+        run: |
+          echo "Bin contents:"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            powershell -NoProfile -Command "if (Test-Path Bin) { Get-ChildItem -Force Bin } else { Write-Host 'Bin not found' }"
+          else
+            ls -la Bin || true
+          fi
+
+      - name: Run tests
+        run: ctest --test-dir Build --output-on-failure -C Release
+
+      - name: Note about DemoApp
+        run: |
+          echo "DemoApp is built but may require a display to run; CI verifies build only." || true
