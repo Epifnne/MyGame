@@ -1,0 +1,118 @@
+{
+  "tests": 8,
+  "failures": 2,
+  "disabled": 0,
+  "errors": 0,
+  "timestamp": "2026-04-21T12:21:27Z",
+  "time": "1.077s",
+  "name": "AllTests",
+  "testsuites": [
+    {
+      "name": "PhysicsWorldTest",
+      "tests": 8,
+      "failures": 2,
+      "disabled": 0,
+      "errors": 0,
+      "timestamp": "2026-04-21T12:21:27Z",
+      "time": "1.064s",
+      "testsuite": [
+        {
+          "name": "DynamicBodyFallsUnderGravity",
+          "file": "E:\\MyGame\\Tests\\Physics\\Physics_BasicTest.cpp",
+          "line": 16,
+          "status": "RUN",
+          "result": "COMPLETED",
+          "timestamp": "2026-04-21T12:21:27Z",
+          "time": "0s",
+          "classname": "PhysicsWorldTest"
+        },
+        {
+          "name": "StaticBodyDoesNotMove",
+          "file": "E:\\MyGame\\Tests\\Physics\\Physics_BasicTest.cpp",
+          "line": 32,
+          "status": "RUN",
+          "result": "COMPLETED",
+          "timestamp": "2026-04-21T12:21:27Z",
+          "time": "0s",
+          "classname": "PhysicsWorldTest"
+        },
+        {
+          "name": "OverlapGeneratesContact",
+          "file": "E:\\MyGame\\Tests\\Physics\\Physics_BasicTest.cpp",
+          "line": 49,
+          "status": "RUN",
+          "result": "COMPLETED",
+          "timestamp": "2026-04-21T12:21:27Z",
+          "time": "0s",
+          "classname": "PhysicsWorldTest"
+        },
+        {
+          "name": "AngularVelocityUpdatesOrientation",
+          "file": "E:\\MyGame\\Tests\\Physics\\Physics_BasicTest.cpp",
+          "line": 86,
+          "status": "RUN",
+          "result": "COMPLETED",
+          "timestamp": "2026-04-21T12:21:27Z",
+          "time": "0s",
+          "classname": "PhysicsWorldTest"
+        },
+        {
+          "name": "RotatedBoxAndSphereGenerateContact",
+          "file": "E:\\MyGame\\Tests\\Physics\\Physics_BasicTest.cpp",
+          "line": 106,
+          "status": "RUN",
+          "result": "COMPLETED",
+          "timestamp": "2026-04-21T12:21:27Z",
+          "time": "0.006s",
+          "classname": "PhysicsWorldTest"
+        },
+        {
+          "name": "SpinOnGroundGeneratesSidewaysVelocity",
+          "file": "E:\\MyGame\\Tests\\Physics\\Physics_BasicTest.cpp",
+          "line": 147,
+          "status": "RUN",
+          "result": "COMPLETED",
+          "timestamp": "2026-04-21T12:21:27Z",
+          "time": "0.291s",
+          "classname": "PhysicsWorldTest",
+          "failures": [
+            {
+              "failure": "E:\\MyGame\\Tests\\Physics\\Physics_BasicTest.cpp:182\nExpected: (std::abs(sphere->LinearVelocity().x)) > (0.25f), actual: 0 vs 0.25\n",
+              "type": ""
+            },
+            {
+              "failure": "E:\\MyGame\\Tests\\Physics\\Physics_BasicTest.cpp:183\nExpected: (std::abs(sphere->Position().x)) > (0.12f), actual: 0 vs 0.12\n",
+              "type": ""
+            }
+          ]
+        },
+        {
+          "name": "CcdPreventsHighSpeedTunneling",
+          "file": "E:\\MyGame\\Tests\\Physics\\Physics_BasicTest.cpp",
+          "line": 186,
+          "status": "RUN",
+          "result": "COMPLETED",
+          "timestamp": "2026-04-21T12:21:27Z",
+          "time": "0.012s",
+          "classname": "PhysicsWorldTest",
+          "failures": [
+            {
+              "failure": "E:\\MyGame\\Tests\\Physics\\Physics_BasicTest.cpp:225\nExpected: (sphere->Position().y) > (groundTop - 0.26f), actual: -5.006001 vs -0.26\n",
+              "type": ""
+            }
+          ]
+        },
+        {
+          "name": "SpinningSphereDoesNotSinkBelowGroundTop",
+          "file": "E:\\MyGame\\Tests\\Physics\\Physics_BasicTest.cpp",
+          "line": 228,
+          "status": "RUN",
+          "result": "COMPLETED",
+          "timestamp": "2026-04-21T12:21:27Z",
+          "time": "0.7s",
+          "classname": "PhysicsWorldTest"
+        }
+      ]
+    }
+  ]
+}

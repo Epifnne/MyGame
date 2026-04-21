@@ -1,6 +1,8 @@
 #pragma once
 
-#include <algorithm>
+#include <array>
+#include <vector>
+
 #include <glm/glm.hpp>
 
 #include "Collider.h"
@@ -22,47 +24,70 @@ public:
 		ContactManifold& outContact) const = 0;
 };
 
-class BasicNarrowPhase final : public NarrowPhase {
+class GjkEpaNarrowPhase final : public NarrowPhase {
 public:
+	GjkEpaNarrowPhase() = default;
+	~GjkEpaNarrowPhase() override = default;
+
 	bool GenerateContact(
 		const Collider& colliderA,
 		const RigidBody& bodyA,
 		const Collider& colliderB,
 		const RigidBody& bodyB,
-		ContactManifold& outContact) const override {
-		const AABB a = colliderA.ComputeAABB(bodyA.Position());
-		const AABB b = colliderB.ComputeAABB(bodyB.Position());
-		if (!a.Intersects(b)) {
-			return false;
-		}
+		ContactManifold& outContact) const override;
 
-		const float overlapX = std::min(a.max.x, b.max.x) - std::max(a.min.x, b.min.x);
-		const float overlapY = std::min(a.max.y, b.max.y) - std::max(a.min.y, b.min.y);
-		const float overlapZ = std::min(a.max.z, b.max.z) - std::max(a.min.z, b.min.z);
+private:
+	struct SupportPoint {
+		glm::vec3 pointA = glm::vec3(0.0f);
+		glm::vec3 pointB = glm::vec3(0.0f);
+		glm::vec3 point = glm::vec3(0.0f);
+	};
 
-		if (overlapX <= 0.0f || overlapY <= 0.0f || overlapZ <= 0.0f) {
-			return false;
-		}
+	using Simplex = std::vector<SupportPoint>;
 
-		const glm::vec3 centerDelta = bodyB.Position() - bodyA.Position();
-		outContact.normal = glm::vec3(0.0f, 1.0f, 0.0f);
-		outContact.point.penetration = overlapY;
+	struct EpaFace {
+		int a = 0;
+		int b = 0;
+		int c = 0;
+		glm::vec3 normal = glm::vec3(0.0f);
+		float distance = 0.0f;
+	};
 
-		if (overlapX <= overlapY && overlapX <= overlapZ) {
-			outContact.normal = glm::vec3(centerDelta.x >= 0.0f ? 1.0f : -1.0f, 0.0f, 0.0f);
-			outContact.point.penetration = overlapX;
-		} else if (overlapY <= overlapZ) {
-			outContact.normal = glm::vec3(0.0f, centerDelta.y >= 0.0f ? 1.0f : -1.0f, 0.0f);
-			outContact.point.penetration = overlapY;
-		} else {
-			outContact.normal = glm::vec3(0.0f, 0.0f, centerDelta.z >= 0.0f ? 1.0f : -1.0f);
-			outContact.point.penetration = overlapZ;
-		}
+	struct EpaResult {
+		glm::vec3 normal = glm::vec3(0.0f, 1.0f, 0.0f);
+		float penetration = 0.0f;
+		glm::vec3 contactPoint = glm::vec3(0.0f);
+	};
 
-		outContact.point.position = (bodyA.Position() + bodyB.Position()) * 0.5f;
-		outContact.point.normalImpulse = 0.0f;
-		return true;
-	}
+	static constexpr int kMaxGjkIterations = 32;
+	static constexpr int kMaxEpaIterations = 48;
+	static constexpr float kEpsilon = 1e-5f;
+
+	SupportPoint Support(
+		const Collider& a,
+		const ShapeTransform& tfA,
+		const Collider& b,
+		const ShapeTransform& tfB,
+		const glm::vec3& direction) const;
+
+	bool RunGjk(
+		const Collider& a,
+		const ShapeTransform& tfA,
+		const Collider& b,
+		const ShapeTransform& tfB,
+		Simplex& simplex) const;
+	bool UpdateSimplex(Simplex& simplex, glm::vec3& direction) const;
+	bool HandleLine(Simplex& simplex, glm::vec3& direction) const;
+	bool HandleTriangle(Simplex& simplex, glm::vec3& direction) const;
+	bool HandleTetrahedron(Simplex& simplex, glm::vec3& direction) const;
+	EpaFace BuildFace(const std::vector<SupportPoint>& vertices, int a, int b, int c) const;
+	bool RunEpa(
+		const Collider& a,
+		const ShapeTransform& tfA,
+		const Collider& b,
+		const ShapeTransform& tfB,
+		const Simplex& simplex,
+		EpaResult& out) const;
 };
 
 } // namespace Physics

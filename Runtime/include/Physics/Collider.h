@@ -13,6 +13,8 @@ struct ColliderDesc {
 	std::shared_ptr<CollisionShape> shape;
 	PhysicsMaterial material;
 	bool isTrigger = false;
+	bool oneSided = false;
+	glm::vec3 oneSidedNormalLocal = glm::vec3(0.0f, 1.0f, 0.0f);
 	uint32_t layer = 1;
 	uint32_t mask = 0xFFFFFFFFu;
 };
@@ -25,6 +27,8 @@ public:
 		: m_shape(desc.shape),
 		  m_material(desc.material),
 		  m_isTrigger(desc.isTrigger),
+		  m_oneSided(desc.oneSided),
+		  m_oneSidedNormalLocal(desc.oneSidedNormalLocal),
 		  m_layer(desc.layer),
 		  m_mask(desc.mask) {}
 
@@ -42,6 +46,16 @@ public:
 	bool IsTrigger() const { return m_isTrigger; }
 	void SetTrigger(bool isTrigger) { m_isTrigger = isTrigger; }
 
+	bool IsOneSided() const { return m_oneSided; }
+	void SetOneSided(bool oneSided) { m_oneSided = oneSided; }
+
+	const glm::vec3& OneSidedNormalLocal() const { return m_oneSidedNormalLocal; }
+	void SetOneSidedNormalLocal(const glm::vec3& normal) {
+		if (glm::dot(normal, normal) > 1e-8f) {
+			m_oneSidedNormalLocal = glm::normalize(normal);
+		}
+	}
+
 	uint32_t Layer() const { return m_layer; }
 	void SetLayer(uint32_t layer) { m_layer = layer; }
 
@@ -52,11 +66,18 @@ public:
 		return (m_mask & other.m_layer) != 0u && (other.m_mask & m_layer) != 0u;
 	}
 
-	AABB ComputeAABB(const glm::vec3& center) const {
+	AABB ComputeAABB(const ShapeTransform& transform) const {
 		if (!m_shape) {
 			return {};
 		}
-		return m_shape->ComputeAABB(center);
+		return m_shape->ComputeAABB(transform);
+	}
+
+	glm::vec3 Support(const ShapeTransform& transform, const glm::vec3& direction) const {
+		if (!m_shape) {
+			return transform.position;
+		}
+		return m_shape->Support(transform, direction);
 	}
 
 private:
@@ -64,6 +85,8 @@ private:
 	std::shared_ptr<CollisionShape> m_shape;
 	PhysicsMaterial m_material;
 	bool m_isTrigger = false;
+	bool m_oneSided = false;
+	glm::vec3 m_oneSidedNormalLocal = glm::vec3(0.0f, 1.0f, 0.0f);
 	uint32_t m_layer = 1;
 	uint32_t m_mask = 0xFFFFFFFFu;
 };

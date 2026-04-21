@@ -50,7 +50,10 @@ public:
 				continue;
 			}
 
-			const AABB aabb = kv.second.ComputeAABB(bodyIt->second.Position());
+			ShapeTransform tf;
+			tf.position = bodyIt->second.Position();
+			tf.orientation = bodyIt->second.Orientation();
+			const AABB aabb = kv.second.ComputeAABB(tf);
 			float tNear = 0.0f;
 			float tFar = maxDistance;
 

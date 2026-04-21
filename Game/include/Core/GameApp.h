@@ -48,13 +48,16 @@ private:
     uint32_t m_ballBodyId = 0;
     uint32_t m_groundBodyId = 0;
 
-    glm::vec3 m_groundPosition = glm::vec3(1.8f, -1.2f, 0.0f);
-    glm::vec3 m_groundScale = glm::vec3(2.2f, 0.35f, 2.2f);
+    glm::vec3 m_groundPosition = glm::vec3(0.0f, -1.625f, 0.0f);
+    glm::vec3 m_groundScale = glm::vec3(16.0f, 1.2f, 16.0f);
     glm::vec3 m_ballVisualScale = glm::vec3(0.45f);
     float m_ballRadius = 0.45f;
     float m_contactSquash = 0.0f;
     float m_squashVelocity = 0.0f;
     float m_lastBallVelocityY = 0.0f;
+    bool m_ballGroundContact = false;
+    float m_ballTelemetryTimer = 0.0f;
+    float m_ballTelemetryDuration = 6.0f;
     bool m_useAsyncResourceIO = true;
 
     bool m_shouldExit = false;

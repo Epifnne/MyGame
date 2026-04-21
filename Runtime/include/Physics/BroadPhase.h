@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <cstdint>
 #include <unordered_map>
 #include <utility>
@@ -20,57 +19,41 @@ public:
 
 	virtual std::vector<BroadPhasePair> ComputePairs(
 		const std::unordered_map<uint32_t, Collider>& colliders,
-		const std::unordered_map<uint32_t, RigidBody>& bodies) const = 0;
+		const std::unordered_map<uint32_t, RigidBody>& bodies) = 0;
 };
 
-class NaiveBroadPhase final : public BroadPhase {
+class DynamicBvhBroadPhase final : public BroadPhase {
 public:
+	DynamicBvhBroadPhase() = default;
+	~DynamicBvhBroadPhase() override = default;
+
 	std::vector<BroadPhasePair> ComputePairs(
 		const std::unordered_map<uint32_t, Collider>& colliders,
-		const std::unordered_map<uint32_t, RigidBody>& bodies) const override {
-		std::vector<BroadPhasePair> pairs;
-		if (colliders.size() < 2) {
-			return pairs;
-		}
+		const std::unordered_map<uint32_t, RigidBody>& bodies) override;
 
-		std::vector<uint32_t> ids;
-		ids.reserve(colliders.size());
-		for (const auto& kv : colliders) {
-			ids.push_back(kv.first);
-		}
+private:
+	struct Node {
+		AABB aabb;
+		int parent = -1;
+		int left = -1;
+		int right = -1;
+		uint32_t bodyId = 0;
 
-		for (size_t i = 0; i < ids.size(); ++i) {
-			const uint32_t idA = ids[i];
-			const auto colliderItA = colliders.find(idA);
-			const auto bodyItA = bodies.find(idA);
-			if (colliderItA == colliders.end() || bodyItA == bodies.end()) {
-				continue;
-			}
+		bool IsLeaf() const { return left < 0 && right < 0; }
+	};
 
-			for (size_t j = i + 1; j < ids.size(); ++j) {
-				const uint32_t idB = ids[j];
-				const auto colliderItB = colliders.find(idB);
-				const auto bodyItB = bodies.find(idB);
-				if (colliderItB == colliders.end() || bodyItB == bodies.end()) {
-					continue;
-				}
+	int AllocateNode();
 
-				const Collider& colliderA = colliderItA->second;
-				const Collider& colliderB = colliderItB->second;
-				if (!colliderA.CanCollideWith(colliderB)) {
-					continue;
-				}
+	void BuildTree(
+		const std::unordered_map<uint32_t, Collider>& colliders,
+		const std::unordered_map<uint32_t, RigidBody>& bodies);
 
-				const AABB aabbA = colliderA.ComputeAABB(bodyItA->second.Position());
-				const AABB aabbB = colliderB.ComputeAABB(bodyItB->second.Position());
-				if (aabbA.Intersects(aabbB)) {
-					pairs.emplace_back(std::min(idA, idB), std::max(idA, idB));
-				}
-			}
-		}
+	void InsertLeaf(int leaf);
+	void FixUpwardTree(int node);
 
-		return pairs;
-	}
+	std::vector<Node> m_nodes;
+	std::vector<int> m_leafNodes;
+	int m_root = -1;
 };
 
 } // namespace Physics

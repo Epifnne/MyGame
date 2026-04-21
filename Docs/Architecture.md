@@ -147,19 +147,21 @@ Physics 采用以下流水线：
 ### 6.2 每个头文件（类）预期职责
 
 - World.h：兼容层/过渡入口，后续逐步收敛到 PhysicsWorld。
-- PhysicsWorld.h：物理世界聚合根；管理刚体、碰撞体、重力、时间步、岛屿与求解器上下文。
+- PhysicsWorld.h：物理世界聚合根；管理刚体、碰撞体、重力、时间步与求解阶段调度。
 - PhysicsSystem.h：ECS 系统入口；负责 PhysicsWorld 与 ECS 的双向同步和帧调度。
-- RigidBody.h：刚体状态与动力学属性；质量、惯量、速度、力矩、睡眠状态。
+- RigidBody.h：刚体状态与动力学属性；质量、角动量、姿态四元数、惯量张量、力与力矩累积。
 - Collider.h：碰撞体组件；关联实体、形状、物理材质、过滤掩码、触发器标记。
-- CollisionShape.h：几何形状抽象；提供 AABB、支持函数或相交测试基础接口。
+- CollisionShape.h：几何形状抽象；提供姿态感知 AABB 与支持函数（Support Mapping）。
 - CollisionDetector.h：碰撞检测编排器；组织 BroadPhase 与 NarrowPhase 并产出接触数据。
+- ContinuousCollision.h：连续碰撞检测模块；执行 TOI（Time Of Impact）搜索并驱动子步推进，避免高速穿透。
 - ContactManifold.h：接触流形数据结构；保存接触点、法线、穿透深度、累计冲量。
+- ContactSolver.h：接触求解模块；统一处理法向冲量、摩擦冲量、位置修正与 one-sided 接触策略。EPA 输出法线方向为 A→B，`EnsureClosingVelocity` 先用接触点速度判定接近，若接触点因旋转出现假分离则回退到质心线速度判定；对球体接触会约束冲量力臂为球半径，避免远离几何表面的接触点导致扭矩异常放大。
 - PhysicsMaterial.h：接触材质参数；静摩擦、动摩擦、恢复系数、组合规则。
 - Constraint.h：约束抽象；用于关节、距离、弹簧、关节限位等统一解算接口。
 - Raycast.h：空间查询接口；支持射线、形状 sweep、重叠检测与过滤。
 - Integrator.h：积分器接口；封装半隐式欧拉等积分策略。
-- BroadPhase.h：宽相位接口；高效产生潜在碰撞对集合。
-- NarrowPhase.h：窄相位接口；对潜在碰撞对进行精确检测并生成 ContactManifold。
+- BroadPhase.h：宽相位接口；当前实现为动态 BVH（fat AABB + 树插入）生成潜在碰撞对。
+- NarrowPhase.h：窄相位接口；当前实现为 GJK + EPA 生成接触法线与穿透深度。
 
 ## 7. Runtime/Platform 头文件职责
 
