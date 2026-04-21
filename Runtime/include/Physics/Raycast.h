@@ -15,11 +15,13 @@ namespace Runtime {
 namespace Physics {
 
 struct Ray {
+	// Ray start point and cast direction in world space.
 	glm::vec3 origin = glm::vec3(0.0f);
 	glm::vec3 direction = glm::vec3(0.0f, -1.0f, 0.0f);
 };
 
 struct RaycastHit {
+	// Closest hit result data.
 	bool hit = false;
 	uint32_t bodyId = 0;
 	glm::vec3 point = glm::vec3(0.0f);
@@ -29,6 +31,7 @@ struct RaycastHit {
 
 class Raycast {
 public:
+	// Cast a ray against all colliders and return nearest hit within maxDistance.
 	static RaycastHit Cast(
 		const Ray& ray,
 		float maxDistance,
@@ -76,6 +79,7 @@ public:
 	}
 
 private:
+	// Slab test between ray and AABB.
 	static bool IntersectRayAABB(
 		const glm::vec3& origin,
 		const glm::vec3& direction,
@@ -114,6 +118,7 @@ private:
 		return true;
 	}
 
+	// Estimate hit normal from dominant axis on AABB surface.
 	static glm::vec3 EstimateNormal(const AABB& aabb, const glm::vec3& point) {
 		const glm::vec3 center = (aabb.min + aabb.max) * 0.5f;
 		const glm::vec3 local = point - center;

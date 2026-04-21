@@ -7,10 +7,12 @@ namespace Runtime {
 namespace Physics {
 
 struct PhysicsMaterial {
+	// Coulomb friction coefficients and restitution.
 	float staticFriction = 0.6f;
 	float dynamicFriction = 0.5f;
 	float restitution = 0.1f;
 
+	// Blend two materials into one effective contact material.
 	static PhysicsMaterial Combine(const PhysicsMaterial& a, const PhysicsMaterial& b) {
 		PhysicsMaterial result;
 		result.staticFriction = std::sqrt(std::max(0.0f, a.staticFriction * b.staticFriction));
