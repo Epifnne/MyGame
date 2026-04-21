@@ -34,6 +34,7 @@ public:
 private:
 	struct Node {
 		AABB aabb;
+		bool active = false;
 		int parent = -1;
 		int left = -1;
 		int right = -1;
@@ -43,17 +44,21 @@ private:
 	};
 
 	int AllocateNode();
+	void ReleaseNode(int node);
 
-	void BuildTree(
+	void SyncLeaves(
 		const std::unordered_map<uint32_t, Collider>& colliders,
 		const std::unordered_map<uint32_t, RigidBody>& bodies);
 
 	void InsertLeaf(int leaf);
+	void RemoveLeaf(int leaf);
 	void FixUpwardTree(int node);
 
 	std::vector<Node> m_nodes;
-	std::vector<int> m_leafNodes;
+	std::vector<int> m_freeNodes;
+	std::unordered_map<uint32_t, int> m_bodyToLeaf;
 	int m_root = -1;
+	float m_fatMargin = 0.08f;
 };
 
 } // namespace Physics

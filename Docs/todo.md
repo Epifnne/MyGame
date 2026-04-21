@@ -53,6 +53,15 @@ Physics模块：{
     - 设计基础 Physics API（`PhysicsWorld`, `RigidBody`, `Collider` 抽象）。
     - 实现基本的物理模拟功能（刚体运动、碰撞检测、简单力学）。
     - 添加示例场景与单元测试覆盖物理模拟。
+    - 宽相位当前采用 Dynamic BVH（二叉树，fat AABB）。
+    - Dynamic BVH 已改为增量更新：支持叶子增量插入、删除、移动后重插入（不再每帧全量重建）。
+
+计划中（混用方案）：
+    - 采用“静态 + 动态”混用宽相位：
+      静态对象：八叉树（或固定网格）管理，降低大场景静态查询成本。
+      动态对象：增量 Dynamic BVH 管理，处理刚体移动与频繁更新。
+      跨结构配对：合并 Static-Static / Dynamic-Dynamic / Static-Dynamic 候选对并统一去重。
+    - 为混用方案补充 Physics 单元测试与 CI 覆盖（插入/删除/移动/跨结构配对正确性与性能基线）。
 
 计划中:
     - 调试demo球体形变。

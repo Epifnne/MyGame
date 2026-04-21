@@ -160,7 +160,7 @@ Physics 采用以下流水线：
 - Constraint.h：约束抽象；用于关节、距离、弹簧、关节限位等统一解算接口。
 - Raycast.h：空间查询接口；支持射线、形状 sweep、重叠检测与过滤。
 - Integrator.h：积分器接口；封装半隐式欧拉等积分策略。
-- BroadPhase.h：宽相位接口；当前实现为动态 BVH（fat AABB + 树插入）生成潜在碰撞对。
+- BroadPhase.h：宽相位接口；当前实现为动态 BVH（fat AABB + 增量插入/删除 + 移动重插入）生成潜在碰撞对；后续演进为静态八叉树（或网格）+ 动态 BVH 的混合宽相位。
 - NarrowPhase.h：窄相位接口；当前实现为 GJK + EPA 生成接触法线与穿透深度。
 
 ## 7. Runtime/Platform 头文件职责
