@@ -98,12 +98,20 @@ bool GjkEpaNarrowPhase::GenerateContact(
     }
 
     Simplex simplex;
-    if (!RunGjk(colliderA, tfA, colliderB, tfB, simplex)) {
+    const QueryResult gjkResult = RunGjk(colliderA, tfA, colliderB, tfB, simplex);
+    if (gjkResult == QueryResult::Separated) {
+        return false;
+    }
+    if (gjkResult == QueryResult::Failed) {
         return BuildFallbackContact(colliderA, tfA, bodyA, colliderB, tfB, bodyB, outContact);
     }
 
     EpaResult epa;
-    if (!RunEpa(colliderA, tfA, colliderB, tfB, simplex, epa)) {
+    const QueryResult epaResult = RunEpa(colliderA, tfA, colliderB, tfB, simplex, epa);
+    if (epaResult == QueryResult::Separated) {
+        return false;
+    }
+    if (epaResult == QueryResult::Failed) {
         return BuildFallbackContact(colliderA, tfA, bodyA, colliderB, tfB, bodyB, outContact);
     }
 
@@ -133,7 +141,7 @@ GjkEpaNarrowPhase::SupportPoint GjkEpaNarrowPhase::Support(
     return p;
 }
 
-bool GjkEpaNarrowPhase::RunGjk(
+GjkEpaNarrowPhase::QueryResult GjkEpaNarrowPhase::RunGjk(
     const Collider& a,
     const ShapeTransform& tfA,
     const Collider& b,
@@ -151,25 +159,25 @@ bool GjkEpaNarrowPhase::RunGjk(
 
     for (int i = 0; i < kMaxGjkIterations; ++i) {
         if (glm::dot(direction, direction) < kEpsilon) {
-            return true;
+            return QueryResult::Intersecting;
         }
 
         SupportPoint newPoint = Support(a, tfA, b, tfB, direction);
         if (glm::dot(newPoint.point, direction) <= 0.0f) {
-            return false;
+            return QueryResult::Separated;
         }
 
         simplex.push_back(newPoint);
         if (UpdateSimplex(simplex, direction)) {
-            return true;
+            return QueryResult::Intersecting;
         }
 
         if (glm::dot(direction, direction) < kEpsilon) {
-            return true;
+            return QueryResult::Intersecting;
         }
     }
 
-    return false;
+    return QueryResult::Failed;
 }
 
 bool GjkEpaNarrowPhase::UpdateSimplex(Simplex& simplex, glm::vec3& direction) const {
@@ -214,24 +222,32 @@ bool GjkEpaNarrowPhase::HandleTriangle(Simplex& simplex, glm::vec3& direction) c
     const glm::vec3 ac = c - a;
     const glm::vec3 ao = -a;
 
+    // Triangle normal defines the two half-spaces above/below the face.
     glm::vec3 abc = glm::cross(ab, ac);
+
+    // Test whether the origin lies outside edge AB.
     glm::vec3 abPerp = glm::cross(abc, ab);
     if (glm::dot(abPerp, ao) > 0.0f) {
+        // Keep edge AB and continue with the line-case search direction.
         simplex = {simplex[1], simplex[2]};
         direction = glm::cross(glm::cross(ab, ao), ab);
         return false;
     }
 
+    // Test whether the origin lies outside edge AC.
     glm::vec3 acPerp = glm::cross(ac, abc);
     if (glm::dot(acPerp, ao) > 0.0f) {
+        // Keep edge AC and continue with the line-case search direction.
         simplex = {simplex[0], simplex[2]};
         direction = glm::cross(glm::cross(ac, ao), ac);
         return false;
     }
 
+    // Origin projects inside the triangle prism; search along face normal.
     if (glm::dot(abc, ao) > 0.0f) {
         direction = abc;
     } else {
+        // Flip winding so normal stays consistent with the new direction.
         direction = -abc;
         std::swap(simplex[0], simplex[1]);
     }
@@ -245,6 +261,7 @@ bool GjkEpaNarrowPhase::HandleTetrahedron(Simplex& simplex, glm::vec3& direction
     const glm::vec3 d = simplex[0].point;
     const glm::vec3 ao = -a;
 
+    // If origin is outside face ABC, reduce simplex to that face.
     const glm::vec3 abc = glm::cross(b - a, c - a);
     if (glm::dot(abc, ao) > 0.0f) {
         simplex = {simplex[1], simplex[2], simplex[3]};
@@ -252,6 +269,7 @@ bool GjkEpaNarrowPhase::HandleTetrahedron(Simplex& simplex, glm::vec3& direction
         return false;
     }
 
+    // If origin is outside face ACD, reduce simplex to that face.
     const glm::vec3 acd = glm::cross(c - a, d - a);
     if (glm::dot(acd, ao) > 0.0f) {
         simplex = {simplex[0], simplex[1], simplex[3]};
@@ -259,6 +277,7 @@ bool GjkEpaNarrowPhase::HandleTetrahedron(Simplex& simplex, glm::vec3& direction
         return false;
     }
 
+    // If origin is outside face ADB, reduce simplex to that face.
     const glm::vec3 adb = glm::cross(d - a, b - a);
     if (glm::dot(adb, ao) > 0.0f) {
         simplex = {simplex[2], simplex[0], simplex[3]};
@@ -266,6 +285,7 @@ bool GjkEpaNarrowPhase::HandleTetrahedron(Simplex& simplex, glm::vec3& direction
         return false;
     }
 
+    // Origin is inside tetrahedron => Minkowski difference contains origin.
     return true;
 }
 
@@ -300,7 +320,7 @@ GjkEpaNarrowPhase::EpaFace GjkEpaNarrowPhase::BuildFace(
     return face;
 }
 
-bool GjkEpaNarrowPhase::RunEpa(
+GjkEpaNarrowPhase::QueryResult GjkEpaNarrowPhase::RunEpa(
     const Collider& a,
     const ShapeTransform& tfA,
     const Collider& b,
@@ -308,7 +328,7 @@ bool GjkEpaNarrowPhase::RunEpa(
     const Simplex& simplex,
     EpaResult& out) const {
     if (simplex.size() < 4) {
-        return false;
+        return QueryResult::Failed;
     }
 
     std::vector<SupportPoint> vertices = simplex;
@@ -320,6 +340,7 @@ bool GjkEpaNarrowPhase::RunEpa(
     faces.push_back(BuildFace(vertices, 1, 3, 2));
 
     for (int iter = 0; iter < kMaxEpaIterations; ++iter) {
+        // Pick the face whose supporting plane is currently closest to the origin.
         int bestFace = -1;
         float minDistance = std::numeric_limits<float>::max();
         for (int i = 0; i < static_cast<int>(faces.size()); ++i) {
@@ -330,29 +351,34 @@ bool GjkEpaNarrowPhase::RunEpa(
         }
 
         if (bestFace < 0) {
-            return false;
+            return QueryResult::Failed;
         }
 
         const EpaFace& face = faces[bestFace];
         SupportPoint p = Support(a, tfA, b, tfB, face.normal);
         const float distance = glm::dot(face.normal, p.point);
 
+        // If pushing along the best-face normal no longer expands meaningfully,
+        // treat this face as converged and export its normal/penetration.
         if (distance - face.distance <= 1e-4f) {
             out.normal = glm::normalize(face.normal);
             out.penetration = std::max(distance, 0.0f);
             out.contactPoint = 0.5f * (p.pointA + p.pointB);
-            return true;
+            return QueryResult::Intersecting;
         }
 
         const int newIndex = static_cast<int>(vertices.size());
         vertices.push_back(p);
 
+        // Collect horizon edges: edges shared by one removed face remain,
+        // while opposite duplicate edges cancel out.
         std::vector<std::array<int, 2>> boundary;
         boundary.reserve(24);
 
         for (int i = static_cast<int>(faces.size()) - 1; i >= 0; --i) {
             const EpaFace& f = faces[i];
             const glm::vec3 pa = vertices[f.a].point;
+            // A face is visible if the new point lies in front of its plane.
             if (glm::dot(f.normal, p.point - pa) <= 0.0f) {
                 continue;
             }
@@ -371,15 +397,17 @@ bool GjkEpaNarrowPhase::RunEpa(
             addOrRemoveEdge(f.b, f.c);
             addOrRemoveEdge(f.c, f.a);
 
+            // Remove visible faces; they form the hole to be re-triangulated.
             faces.erase(faces.begin() + static_cast<std::ptrdiff_t>(i));
         }
 
+        // Stitch the hole by connecting each boundary edge to the new support point.
         for (const auto& e : boundary) {
             faces.push_back(BuildFace(vertices, e[0], e[1], newIndex));
         }
     }
 
-    return false;
+    return QueryResult::Failed;
 }
 
 } // namespace Physics

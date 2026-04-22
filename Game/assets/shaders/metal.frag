@@ -90,19 +90,31 @@ void main() {
     float G = GeometrySmith(N, V, L, k);
     vec3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
 
+    float D2 = DistributionGGX(N, H2, roughness);
+    float G2 = GeometrySmith(N, V, L2, k);
+    vec3 F2 = FresnelSchlick(max(dot(H2, V), 0.0), F0);
+
     vec3 numerator = D * G * F;
     float denom = max(4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0), 1e-4);
     vec3 specular = numerator / denom;
+
+    vec3 numerator2 = D2 * G2 * F2;
+    float denom2 = max(4.0 * max(dot(N, V), 0.0) * max(dot(N, L2), 0.0), 1e-4);
+    vec3 specular2 = numerator2 / denom2;
 
     vec3 kS = F;
     vec3 kD = (1.0 - kS) * (1.0 - metallic);
     vec3 diffuse = kD * albedo / PI;
 
+    vec3 kS2 = F2;
+    vec3 kD2 = (1.0 - kS2) * (1.0 - metallic);
+    vec3 diffuse2 = kD2 * albedo / PI;
+
     float NdotL = max(dot(N, L), 0.0);
     vec3 Lo = (diffuse + specular) * vec3(1.5) * NdotL;
 
     float NdotL2 = max(dot(N, L2), 0.0);
-    vec3 Lo2 = (diffuse + specular) * vec3(0.5) * NdotL2;
+    vec3 Lo2 = (diffuse2 + specular2) * vec3(0.5) * NdotL2;
 
     vec3 ambient = vec3(0.15) * ao * albedo;
 

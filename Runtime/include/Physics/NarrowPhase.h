@@ -64,6 +64,12 @@ private:
 		glm::vec3 contactPoint = glm::vec3(0.0f);
 	};
 
+	enum class QueryResult {
+		Separated,
+		Intersecting,
+		Failed,
+	};
+
 	static constexpr int kMaxGjkIterations = 32;
 	static constexpr int kMaxEpaIterations = 48;
 	static constexpr float kEpsilon = 1e-5f;
@@ -77,7 +83,7 @@ private:
 		const glm::vec3& direction) const;
 
 	// GJK intersection test and simplex generation.
-	bool RunGjk(
+	QueryResult RunGjk(
 		const Collider& a,
 		const ShapeTransform& tfA,
 		const Collider& b,
@@ -91,7 +97,7 @@ private:
 	// Build one EPA face with consistent outward normal.
 	EpaFace BuildFace(const std::vector<SupportPoint>& vertices, int a, int b, int c) const;
 	// Expand simplex to polytope and compute penetration info.
-	bool RunEpa(
+	QueryResult RunEpa(
 		const Collider& a,
 		const ShapeTransform& tfA,
 		const Collider& b,
