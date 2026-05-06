@@ -9,6 +9,7 @@
 #include <Graphics/TextureManager.h>
 #include <Physics/PhysicsWorld.h>
 #include <Core/Input.h>
+#include <Network/NetworkManager.h>
 #include <Resource/ResourceManager.h>
 
 namespace Runtime { namespace Core { class Engine; } }
@@ -59,6 +60,13 @@ private:
     float m_ballTelemetryTimer = 0.0f;
     float m_ballTelemetryDuration = 6.0f;
     bool m_useAsyncResourceIO = true;
+
+    Runtime::Network::NetworkManager m_networkManager;
+    Runtime::Network::Endpoint m_serverEndpoint{"127.0.0.1", 45000};
+    bool m_networkStarted = false;
+    bool m_sentInitialPing = false;
+    float m_pingTimer = 0.0f;
+    uint32_t m_pongCount = 0;
 
     bool m_shouldExit = false;
 };

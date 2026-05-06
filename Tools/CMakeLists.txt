@@ -1,2 +1,19 @@
-# Tests were merged into Game sample runtime path.
+add_executable(LocalServerDemo
+	LocalServerDemo.cpp
+)
+
+target_link_libraries(LocalServerDemo
+	PRIVATE
+		RuntimeLib
+)
+
+target_compile_features(LocalServerDemo PRIVATE cxx_std_17)
+
+set_target_properties(LocalServerDemo PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${MYGAME_OUTPUT_ROOT}
+	RUNTIME_OUTPUT_DIRECTORY_DEBUG ${MYGAME_OUTPUT_ROOT}
+	RUNTIME_OUTPUT_DIRECTORY_RELEASE ${MYGAME_OUTPUT_ROOT}
+	RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${MYGAME_OUTPUT_ROOT}
+	RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL ${MYGAME_OUTPUT_ROOT}
+)
 

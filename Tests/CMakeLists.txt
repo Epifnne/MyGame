@@ -82,3 +82,18 @@ target_link_libraries(Resource_Test
 target_compile_features(Resource_Test PRIVATE cxx_std_17)
 
 gtest_discover_tests(Resource_Test)
+
+add_executable(Network_Test
+    Network/Network_BasicTest.cpp
+)
+set_test_output_dir(Network_Test)
+
+target_link_libraries(Network_Test
+    PRIVATE
+        RuntimeLib
+        GTest::gtest_main
+)
+
+target_compile_features(Network_Test PRIVATE cxx_std_17)
+
+gtest_discover_tests(Network_Test)

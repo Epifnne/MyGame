@@ -29,5 +29,9 @@ target_link_libraries(RuntimeLib
 		OpenGL::GL
 )
 
+if(WIN32)
+	target_link_libraries(RuntimeLib PRIVATE ws2_32)
+endif()
+
 target_compile_definitions(RuntimeLib PRIVATE GLFW_INCLUDE_NONE)
 target_compile_features(RuntimeLib PUBLIC cxx_std_17)

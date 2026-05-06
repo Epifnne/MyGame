@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <future>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -221,7 +222,23 @@ bool GameApp::Initialize(Runtime::Core::Engine& engine) {
         return false;
     }
 
-    if (!m_resourceManager.GetFileSystem().Mount("assets", "assets")) {
+    bool mountedAssets = false;
+    const std::vector<std::string> assetCandidates = {
+        "assets",
+        "MyGame/assets",
+        "../assets"
+    };
+    for (const std::string& candidate : assetCandidates) {
+        if (!std::filesystem::exists(std::filesystem::path(candidate))) {
+            continue;
+        }
+        if (m_resourceManager.GetFileSystem().Mount("assets", candidate)) {
+            mountedAssets = true;
+            break;
+        }
+    }
+
+    if (!mountedAssets) {
         std::cerr << "Failed to mount assets root for resource IO." << std::endl;
         return false;
     }
@@ -341,10 +358,54 @@ bool GameApp::Initialize(Runtime::Core::Engine& engine) {
     m_ballTelemetryTimer = 0.0f;
     m_ballTelemetryDuration = 6.0f;
 
+    m_networkStarted = m_networkManager.StartClient(m_serverEndpoint);
+    if (!m_networkStarted) {
+        std::cout << "[NetworkClient] failed to start client worker" << std::endl;
+    }
+    m_sentInitialPing = false;
+    m_pingTimer = 0.0f;
+    m_pongCount = 0;
+
     return true;
 }
 
 void GameApp::Update(float dt, const Runtime::Core::Input& input) {
+    Runtime::Network::NetworkEvent networkEvent;
+    while (m_networkManager.PollEvent(networkEvent)) {
+        switch (networkEvent.type) {
+        case Runtime::Network::NetworkEventType::Connected:
+            std::cout << "[NetworkClient] connected to "
+                      << m_serverEndpoint.address << ":" << m_serverEndpoint.port << std::endl;
+            m_sentInitialPing = false;
+            break;
+        case Runtime::Network::NetworkEventType::Disconnected:
+            std::cout << "[NetworkClient] disconnected: " << networkEvent.detail << std::endl;
+            break;
+        case Runtime::Network::NetworkEventType::Error:
+            std::cout << "[NetworkClient] error: " << networkEvent.detail << std::endl;
+            break;
+        case Runtime::Network::NetworkEventType::MessageReceived:
+            if (networkEvent.message.Type() == Runtime::Network::MessageType::Pong) {
+                ++m_pongCount;
+                std::cout << "[NetworkClient] received pong #" << m_pongCount
+                          << " seq=" << networkEvent.message.header.sequence << std::endl;
+            }
+            break;
+        }
+    }
+
+    if (m_networkManager.IsConnected()) {
+        if (!m_sentInitialPing) {
+            m_networkManager.Send(Runtime::Network::Message::Ping());
+            m_sentInitialPing = true;
+        }
+
+        m_pingTimer += dt;
+        if (m_pingTimer >= 1.0f) {
+            m_pingTimer = 0.0f;
+            m_networkManager.Send(Runtime::Network::Message::Ping());
+        }
+    }
 
     auto* ballBody = m_physicsWorld.GetRigidBody(m_ballBodyId);
     float impactSpeed = 0.0f;
@@ -553,6 +614,8 @@ void GameApp::Render(Runtime::Core::Engine& engine) {
 }
 
 void GameApp::Shutdown() {
+    m_networkManager.Stop();
+
     if (m_mesh) {
         m_mesh->Destroy();
     }

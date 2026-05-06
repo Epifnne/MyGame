@@ -238,6 +238,21 @@ Network 采用客户端-服务器架构，支持 TCP（可靠消息）与 UDP（
 - StateSnapshot.h：状态快照；服务器端权威世界状态序列化、差异压缩与广播。
 - ClientPredictor.h：客户端预测与回滚；缓存本地输入历史，在收到服务器快照后执行状态修正。
 
+### 9.3 当前实现状态（2026-04-25）
+
+第一阶段已落地（MVP）：
+
+1. 已实现 TCP 端到端闭环：Socket/Connection/Message/Serializer/Dispatcher/PacketBuffer/NetworkManager 基础能力可用。
+2. 已实现独立网络线程 + 线程安全事件队列，支持客户端连接、消息接收、心跳探活、断线后一次重连。
+3. 已实现 Game 客户端示例接入：启动后连接 `127.0.0.1:45000`，周期发送 Ping，接收 Pong 并输出日志。
+4. 已实现独立服务端示例 `LocalServerDemo`：监听本地端口并处理 Connect/Ping/Disconnect。
+5. 已补齐 Network 测试并接入 CTest：序列化、包缓存、TCP 回环、断线重连。
+
+第一阶段未实现（按分期策略保留）：
+
+1. UDP 可靠层（Channel）仅保留接口占位，语义为第二阶段实现。
+2. StateSnapshot 与 ClientPredictor 当前为数据结构/占位实现，未接入权威同步与回滚流程。
+
 ## 10. Runtime/UI 头文件职责
 
 ### 10.1 模块分层
