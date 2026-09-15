@@ -45,9 +45,22 @@ public:
 	uint32_t BodyId() const { return m_bodyId; }
 	void SetBodyId(uint32_t bodyId) { m_bodyId = bodyId; }
 
+	// Unique identity assigned by PhysicsWorld on attach. A replacement collider
+	// always receives a fresh identity so the midphase can detect replacement
+	// even when revision counters would coincidentally match.
+	uint32_t Identity() const { return m_identity; }
+	void SetIdentity(uint32_t identity) { m_identity = identity; }
+
+	// Bumped by every property setter below. The mutable Material() accessor
+	// cannot bump it, so the midphase compares material values instead.
+	uint32_t Revision() const { return m_revision; }
+
 	// Access or replace underlying collision shape.
 	const std::shared_ptr<CollisionShape>& Shape() const { return m_shape; }
-	void SetShape(std::shared_ptr<CollisionShape> shape) { m_shape = std::move(shape); }
+	void SetShape(std::shared_ptr<CollisionShape> shape) {
+		m_shape = std::move(shape);
+		++m_revision;
+	}
 
 	// Access material parameters.
 	const PhysicsMaterial& Material() const { return m_material; }
@@ -55,25 +68,38 @@ public:
 
 	// Trigger flag controls overlap-only behavior.
 	bool IsTrigger() const { return m_isTrigger; }
-	void SetTrigger(bool isTrigger) { m_isTrigger = isTrigger; }
+	void SetTrigger(bool isTrigger) {
+		m_isTrigger = isTrigger;
+		++m_revision;
+	}
 
 	// One-sided flag and local normal controls directional collision response.
 	bool IsOneSided() const { return m_oneSided; }
-	void SetOneSided(bool oneSided) { m_oneSided = oneSided; }
+	void SetOneSided(bool oneSided) {
+		m_oneSided = oneSided;
+		++m_revision;
+	}
 
 	const glm::vec3& OneSidedNormalLocal() const { return m_oneSidedNormalLocal; }
 	void SetOneSidedNormalLocal(const glm::vec3& normal) {
 		if (glm::dot(normal, normal) > 1e-8f) {
 			m_oneSidedNormalLocal = glm::normalize(normal);
+			++m_revision;
 		}
 	}
 
 	// Collision filter group and mask accessors.
 	uint32_t Layer() const { return m_layer; }
-	void SetLayer(uint32_t layer) { m_layer = layer; }
+	void SetLayer(uint32_t layer) {
+		m_layer = layer;
+		++m_revision;
+	}
 
 	uint32_t Mask() const { return m_mask; }
-	void SetMask(uint32_t mask) { m_mask = mask; }
+	void SetMask(uint32_t mask) {
+		m_mask = mask;
+		++m_revision;
+	}
 
 	// Return true when both colliders pass layer/mask filtering.
 	bool CanCollideWith(const Collider& other) const {
@@ -97,6 +123,8 @@ public:
 
 private:
 	uint32_t m_bodyId = 0;
+	uint32_t m_identity = 0;
+	uint32_t m_revision = 0;
 	std::shared_ptr<CollisionShape> m_shape;
 	PhysicsMaterial m_material;
 	bool m_isTrigger = false;

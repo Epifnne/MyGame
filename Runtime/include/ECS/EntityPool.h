@@ -14,7 +14,7 @@ public:
 		m_alive.push_back(false);
 	}
 
-	Entity Create() {
+	[[nodiscard("created entity must be retained for later access or destruction")]] Entity Create() {
 		if (!m_free.empty()) {
 			Entity e = m_free.back(); m_free.pop_back(); m_alive[e] = true; return e;
 		}
@@ -32,11 +32,11 @@ public:
 		m_free.push_back(e);
 	}
 
-	bool IsAlive(Entity e) const {
+	[[nodiscard]] bool IsAlive(Entity e) const {
 		return e > 0 && e < static_cast<Entity>(m_generations.size()) && m_alive[e];
 	}
 
-	uint32_t Generation(Entity e) const {
+	[[nodiscard]] uint32_t Generation(Entity e) const {
 		if (e >= static_cast<Entity>(m_generations.size())) return 0;
 		return m_generations[e];
 	}

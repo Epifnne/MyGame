@@ -22,12 +22,17 @@ RigidBody::RigidBody(const RigidBodyDesc& desc)
 
 void RigidBody::SetOrientation(const glm::quat& orientation) {
     m_orientation = glm::normalize(orientation);
+    ++m_poseRevision;
+    RefreshInverseInertiaTensorWorld();
     UpdateAngularVelocityFromMomentum();
 }
 
 void RigidBody::SetAngularVelocity(const glm::vec3& velocity) {
-    m_angularVelocity = velocity;
-    m_angularMomentum = InverseInertiaTensorWorldInverse() * m_angularVelocity;
+    // L is authoritative: derive momentum from the requested velocity, then
+    // re-derive omega through the cached inverse inertia (static bodies end
+    // up with zero L and zero omega).
+    m_angularMomentum = InverseInertiaTensorWorldInverse() * velocity;
+    UpdateAngularVelocityFromMomentum();
 }
 
 void RigidBody::SetAngularMomentum(const glm::vec3& momentum) {
@@ -35,19 +40,21 @@ void RigidBody::SetAngularMomentum(const glm::vec3& momentum) {
     UpdateAngularVelocityFromMomentum();
 }
 
-glm::mat3 RigidBody::InverseInertiaTensorWorld() const {
+void RigidBody::RefreshInverseInertiaTensorWorld() {
     if (m_isStatic) {
-        return glm::mat3(0.0f);
+        m_inverseInertiaTensorWorld = glm::mat3(0.0f);
+        return;
     }
     const glm::mat3 r = glm::mat3_cast(glm::normalize(m_orientation));
     const glm::mat3 iBodyInv = glm::mat3(
         glm::vec3(m_inverseInertiaTensorDiagonal.x, 0.0f, 0.0f),
         glm::vec3(0.0f, m_inverseInertiaTensorDiagonal.y, 0.0f),
         glm::vec3(0.0f, 0.0f, m_inverseInertiaTensorDiagonal.z));
-    return r * iBodyInv * glm::transpose(r);
+    m_inverseInertiaTensorWorld = r * iBodyInv * glm::transpose(r);
 }
 
 void RigidBody::SetMass(float mass) {
+    ++m_structureRevision;
     if (m_isStatic) {
         m_mass = 0.0f;
         m_inverseMass = 0.0f;
@@ -59,15 +66,18 @@ void RigidBody::SetMass(float mass) {
 }
 
 void RigidBody::SetInertiaTensorDiagonal(const glm::vec3& inertiaDiagonal) {
+    ++m_structureRevision;
     m_inertiaTensorDiagonal = glm::max(inertiaDiagonal, glm::vec3(0.0001f));
     m_inverseInertiaTensorDiagonal = glm::vec3(
         1.0f / m_inertiaTensorDiagonal.x,
         1.0f / m_inertiaTensorDiagonal.y,
         1.0f / m_inertiaTensorDiagonal.z);
+    RefreshInverseInertiaTensorWorld();
     UpdateAngularVelocityFromMomentum();
 }
 
 void RigidBody::SetStatic(bool isStatic) {
+    ++m_structureRevision;
     m_isStatic = isStatic;
     if (m_isStatic) {
         m_mass = 0.0f;
@@ -80,6 +90,8 @@ void RigidBody::SetStatic(bool isStatic) {
     } else if (m_mass <= 0.0f) {
         SetMass(1.0f);
     }
+    RefreshInverseInertiaTensorWorld();
+    UpdateAngularVelocityFromMomentum();
 }
 
 void RigidBody::ApplyForce(const glm::vec3& force) {
@@ -107,8 +119,20 @@ void RigidBody::ApplyAngularImpulse(const glm::vec3& impulse) {
     if (m_isStatic) {
         return;
     }
+    // Incremental form of omega = Iworld^-1 * L using the cached matrix.
     m_angularMomentum += impulse;
-    UpdateAngularVelocityFromMomentum();
+    m_angularVelocity += m_inverseInertiaTensorWorld * impulse;
+}
+
+void RigidBody::ApplySolverAngularImpulse(const glm::vec3& angularImpulse, const glm::vec3& deltaAngularVelocity) {
+    if (m_isStatic) {
+        return;
+    }
+    // The solver supplies delta omega precomputed with the same inverse
+    // inertia matrix it used for the effective mass, keeping the applied
+    // response consistent with the predicted one.
+    m_angularMomentum += angularImpulse;
+    m_angularVelocity += deltaAngularVelocity;
 }
 
 void RigidBody::ClearForces() {
@@ -118,7 +142,6 @@ void RigidBody::ClearForces() {
 
 void RigidBody::Integrate(float dt, const glm::vec3& gravity) {
     if (m_isStatic || dt <= 0.0f) {
-        ClearForces();
         return;
     }
 
@@ -137,7 +160,12 @@ void RigidBody::Integrate(float dt, const glm::vec3& gravity) {
     const glm::quat omega(0.0f, m_angularVelocity.x, m_angularVelocity.y, m_angularVelocity.z);
     m_orientation += 0.5f * dt * (omega * m_orientation);
     m_orientation = glm::normalize(m_orientation);
-    ClearForces();
+    // Orientation changed: refresh the cached inverse inertia and re-derive
+    // omega from the authoritative momentum so they cannot diverge.
+    RefreshInverseInertiaTensorWorld();
+    UpdateAngularVelocityFromMomentum();
+    // Accumulated forces are NOT cleared here: PhysicsWorld clears them once at
+    // fixed-step end so CCD sub-steps each integrate the locked forces by own dt.
 }
 
 glm::mat3 RigidBody::InverseInertiaTensorWorldInverse() const {
@@ -157,7 +185,7 @@ void RigidBody::UpdateAngularVelocityFromMomentum() {
         m_angularVelocity = glm::vec3(0.0f);
         return;
     }
-    m_angularVelocity = InverseInertiaTensorWorld() * m_angularMomentum;
+    m_angularVelocity = m_inverseInertiaTensorWorld * m_angularMomentum;
 }
 
 } // namespace Physics

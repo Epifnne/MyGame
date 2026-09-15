@@ -13,8 +13,8 @@ class IComponentPool {
 public:
     virtual ~IComponentPool() = default;
     virtual void Erase(Entity e) = 0;
-    virtual bool Has(Entity e) const = 0;
-    virtual std::vector<Entity> Entities() const = 0;
+    [[nodiscard]] virtual bool Has(Entity e) const = 0;
+    [[nodiscard]] virtual std::vector<Entity> Entities() const = 0;
 };
 
 template<typename T>
@@ -35,12 +35,12 @@ public:
         m_entities.erase(std::remove(m_entities.begin(), m_entities.end(), e), m_entities.end());
     }
 
-    bool Has(Entity e) const { return e < m_data.size() && m_data[e].has_value(); }
+    [[nodiscard]] bool Has(Entity e) const { return e < m_data.size() && m_data[e].has_value(); }
 
-    T& Get(Entity e) { return m_data.at(static_cast<size_t>(e)).value(); }
-    const T& Get(Entity e) const { return m_data.at(static_cast<size_t>(e)).value(); }
+    [[nodiscard]] T& Get(Entity e) { return m_data.at(static_cast<size_t>(e)).value(); }
+    [[nodiscard]] const T& Get(Entity e) const { return m_data.at(static_cast<size_t>(e)).value(); }
 
-    std::vector<Entity> Entities() const { return m_entities; }
+    [[nodiscard]] std::vector<Entity> Entities() const { return m_entities; }
 
 private:
     std::vector<std::optional<T>> m_data; 
@@ -59,10 +59,10 @@ public:
     template<typename... Args>
     void EmplaceConstruct(Entity e, Args&&... args) { m_pool.EmplaceConstruct(e, std::forward<Args>(args)...); }
     void Erase(Entity e) override { m_pool.Erase(e); }
-    bool Has(Entity e) const override { return m_pool.Has(e); }
-    T& Get(Entity e) { return m_pool.Get(e); }
-    const T& Get(Entity e) const { return m_pool.Get(e); }
-    std::vector<Entity> Entities() const override { return m_pool.Entities(); }
+    [[nodiscard]] bool Has(Entity e) const override { return m_pool.Has(e); }
+    [[nodiscard]] T& Get(Entity e) { return m_pool.Get(e); }
+    [[nodiscard]] const T& Get(Entity e) const { return m_pool.Get(e); }
+    [[nodiscard]] std::vector<Entity> Entities() const override { return m_pool.Entities(); }
 
 private:
     ComponentPool<T> m_pool;

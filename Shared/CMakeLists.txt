@@ -7,4 +7,4 @@ target_include_directories(SharedLib
 		${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-target_compile_features(SharedLib PUBLIC cxx_std_17)
+target_compile_features(SharedLib PUBLIC cxx_std_20)

@@ -15,7 +15,7 @@ class Registry {
 public:
 	Registry() = default;
 
-	Entity CreateEntity() { return m_entities.Create(); }
+	[[nodiscard("created entity must be retained for later access or destruction")]] Entity CreateEntity() { return m_entities.Create(); }
 
 	void DestroyEntity(Entity e) {
 		if (!m_entities.IsAlive(e)) return;
@@ -37,19 +37,19 @@ public:
 	}
 
 	template<typename T>
-	bool HasComponent(Entity e) const {
+	[[nodiscard]] bool HasComponent(Entity e) const {
 		auto it = m_pools.find(std::type_index(typeid(T)));
 		if (it == m_pools.end()) return false;
 		return static_cast<const ComponentPoolWrapper<T>*>(it->second.get())->Has(e);
 	}
 
 	template<typename T>
-	T& GetComponent(Entity e) {
+	[[nodiscard]] T& GetComponent(Entity e) {
 		return GetOrCreatePool<T>()->Get(e);
 	}
 
 	template<typename T>
-	const T& GetComponent(Entity e) const {
+	[[nodiscard]] const T& GetComponent(Entity e) const {
 		auto it = m_pools.find(std::type_index(typeid(T)));
 		if (it == m_pools.end()) {
 			throw std::runtime_error("Component type not registered");
@@ -58,7 +58,7 @@ public:
 	}
 
 	template<typename T>
-	std::vector<Entity> EntitiesWith() const {
+	[[nodiscard]] std::vector<Entity> EntitiesWith() const {
 		auto it = m_pools.find(std::type_index(typeid(T)));
 		if (it == m_pools.end()) return {};
 		return it->second->Entities();

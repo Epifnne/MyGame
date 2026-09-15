@@ -5,8 +5,8 @@ namespace Config {
 
 class BuildConfig {
 public:
-    static const char* EngineName();
-    static const char* EngineVersion();
+    [[nodiscard]] static const char* EngineName() noexcept;
+    [[nodiscard]] static const char* EngineVersion() noexcept;
 };
 
 } // namespace Config

@@ -1,6 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <limits>
+#include <utility>
+#include <vector>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
@@ -45,6 +48,17 @@ struct ShapeTransform {
 	glm::quat orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 };
 
+enum class SupportFeatureType {
+	Vertex,
+	Edge,
+	Face,
+};
+
+struct SupportFeature {
+	SupportFeatureType type = SupportFeatureType::Vertex;
+	std::vector<glm::vec3> vertices;
+};
+
 class CollisionShape {
 public:
 	virtual ~CollisionShape() = default;
@@ -52,6 +66,12 @@ public:
 	virtual AABB ComputeAABB(const ShapeTransform& transform) const = 0;
 	// Return furthest point along direction in world-space.
 	virtual glm::vec3 Support(const ShapeTransform& transform, const glm::vec3& direction) const = 0;
+	// Return the world-space feature furthest along direction.
+	virtual SupportFeature GetSupportFeature(
+		const ShapeTransform& transform,
+		const glm::vec3& direction) const {
+		return {SupportFeatureType::Vertex, {Support(transform, direction)}};
+	}
 };
 
 class SphereShape final : public CollisionShape {
@@ -112,8 +132,112 @@ public:
 		return transform.position + (q * localSupport);
 	}
 
+	SupportFeature GetSupportFeature(
+		const ShapeTransform& transform,
+		const glm::vec3& direction) const override {
+		const glm::quat orientation = glm::normalize(transform.orientation);
+		const glm::vec3 localDirection = glm::inverse(orientation) * direction;
+		const float tolerance = 1e-4f * std::max(1.0f, glm::length(localDirection));
+		SupportFeature feature;
+		for (int sx : {-1, 1}) {
+			for (int sy : {-1, 1}) {
+				for (int sz : {-1, 1}) {
+					const glm::vec3 vertex(
+						static_cast<float>(sx) * m_halfExtents.x,
+						static_cast<float>(sy) * m_halfExtents.y,
+						static_cast<float>(sz) * m_halfExtents.z);
+					const glm::vec3 supportSigns(
+						localDirection.x >= 0.0f ? m_halfExtents.x : -m_halfExtents.x,
+						localDirection.y >= 0.0f ? m_halfExtents.y : -m_halfExtents.y,
+						localDirection.z >= 0.0f ? m_halfExtents.z : -m_halfExtents.z);
+					const float bestProjection = glm::dot(supportSigns, localDirection);
+					if (bestProjection - glm::dot(vertex, localDirection) <= tolerance) {
+						feature.vertices.push_back(transform.position + orientation * vertex);
+					}
+				}
+			}
+		}
+		feature.type = feature.vertices.size() >= 3
+			? SupportFeatureType::Face
+			: (feature.vertices.size() == 2 ? SupportFeatureType::Edge : SupportFeatureType::Vertex);
+		return feature;
+	}
+
 private:
 	glm::vec3 m_halfExtents = glm::vec3(0.5f);
+};
+
+class ConvexHullShape final : public CollisionShape {
+public:
+	explicit ConvexHullShape(std::vector<glm::vec3> vertices)
+		: m_vertices(std::move(vertices)) {}
+
+	const std::vector<glm::vec3>& Vertices() const { return m_vertices; }
+
+	AABB ComputeAABB(const ShapeTransform& transform) const override {
+		if (m_vertices.empty()) {
+			return {transform.position, transform.position};
+		}
+
+		const glm::quat orientation = glm::normalize(transform.orientation);
+		glm::vec3 boundsMin(std::numeric_limits<float>::max());
+		glm::vec3 boundsMax(std::numeric_limits<float>::lowest());
+		for (const glm::vec3& vertex : m_vertices) {
+			const glm::vec3 worldVertex = transform.position + orientation * vertex;
+			boundsMin = glm::min(boundsMin, worldVertex);
+			boundsMax = glm::max(boundsMax, worldVertex);
+		}
+		return {boundsMin, boundsMax};
+	}
+
+	glm::vec3 Support(const ShapeTransform& transform, const glm::vec3& direction) const override {
+		if (m_vertices.empty()) {
+			return transform.position;
+		}
+
+		const glm::quat orientation = glm::normalize(transform.orientation);
+		const glm::vec3 localDirection = glm::inverse(orientation) * direction;
+		const glm::vec3* supportVertex = &m_vertices.front();
+		float bestProjection = glm::dot(*supportVertex, localDirection);
+		for (const glm::vec3& vertex : m_vertices) {
+			const float projection = glm::dot(vertex, localDirection);
+			if (projection > bestProjection) {
+				bestProjection = projection;
+				supportVertex = &vertex;
+			}
+		}
+		return transform.position + orientation * *supportVertex;
+	}
+
+	SupportFeature GetSupportFeature(
+		const ShapeTransform& transform,
+		const glm::vec3& direction) const override {
+		if (m_vertices.empty()) {
+			return {};
+		}
+
+		const glm::quat orientation = glm::normalize(transform.orientation);
+		const glm::vec3 localDirection = glm::inverse(orientation) * direction;
+		float bestProjection = std::numeric_limits<float>::lowest();
+		for (const glm::vec3& vertex : m_vertices) {
+			bestProjection = std::max(bestProjection, glm::dot(vertex, localDirection));
+		}
+
+		const float tolerance = 1e-4f * std::max(1.0f, std::abs(bestProjection));
+		SupportFeature feature;
+		for (const glm::vec3& vertex : m_vertices) {
+			if (bestProjection - glm::dot(vertex, localDirection) <= tolerance) {
+				feature.vertices.push_back(transform.position + orientation * vertex);
+			}
+		}
+		feature.type = feature.vertices.size() >= 3
+			? SupportFeatureType::Face
+			: (feature.vertices.size() == 2 ? SupportFeatureType::Edge : SupportFeatureType::Vertex);
+		return feature;
+	}
+
+private:
+	std::vector<glm::vec3> m_vertices;
 };
 
 } // namespace Physics

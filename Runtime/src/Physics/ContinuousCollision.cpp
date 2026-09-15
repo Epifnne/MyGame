@@ -52,7 +52,9 @@ bool ContinuousCollisionDetector::GenerateContactAtTime(
     interpolatedB.SetOrientation(tfB.orientation);
 
     GjkEpaNarrowPhase narrow;
-    return narrow.GenerateContact(colliderA, interpolatedA, colliderB, interpolatedB, outContact);
+    // CCD stays on the calling thread this phase; statistics are discarded.
+    NarrowPhaseQueryStats ignoredStats;
+    return narrow.GenerateContact(colliderA, interpolatedA, colliderB, interpolatedB, outContact, ignoredStats);
 }
 
 TimeOfImpact ContinuousCollisionDetector::FindEarliestImpact(

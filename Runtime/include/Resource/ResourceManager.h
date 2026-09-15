@@ -1,8 +1,9 @@
 #pragma once
 
-#include <condition_variable>
+#include <atomic>
+#include <array>
 #include <cstddef>
-#include <deque>
+#include <cstdint>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -26,6 +27,128 @@ using AssetHandle = ::Runtime::Handle;
 
 class Resource;
 class ResourceLoader;
+
+template <typename T, uint32_t CapacityLog2 = 16>
+class LockFreeMpmcQueue {
+public:
+	static constexpr size_t kCacheLineSize = 64;
+
+	LockFreeMpmcQueue() {
+		m_buffer = std::make_unique<Slot[]>(kCapacity);
+		for (uint32_t i = 0; i < kCapacity; ++i) {
+			m_buffer[i].sequence.store(i, std::memory_order_relaxed);
+		}
+	}
+
+	bool TryEnqueue(T&& value) {
+		uint32_t pos = m_enqueuePos.load(std::memory_order_relaxed);
+		for (;;) {
+			Slot& slot = m_buffer[pos & kMask];
+			const uint32_t seq = slot.sequence.load(std::memory_order_acquire);
+			const int32_t diff = static_cast<int32_t>(seq - pos);
+
+			if (diff == 0) {
+				if (m_enqueuePos.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed)) {
+					slot.value = std::move(value);
+					slot.sequence.store(pos + 1, std::memory_order_release);
+					m_dataEpoch.fetch_add(1, std::memory_order_release);
+					m_dataEpoch.notify_one();
+					return true;
+				}
+			} else if (diff < 0) {
+				return false;
+			} else {
+				pos = m_enqueuePos.load(std::memory_order_relaxed);
+			}
+		}
+	}
+
+	bool TryDequeue(T& value) {
+		uint32_t pos = m_dequeuePos.load(std::memory_order_relaxed);
+		for (;;) {
+			Slot& slot = m_buffer[pos & kMask];
+			const uint32_t seq = slot.sequence.load(std::memory_order_acquire);
+			const int32_t diff = static_cast<int32_t>(seq - (pos + 1));
+
+			if (diff == 0) {
+				if (m_dequeuePos.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed)) {
+					value = std::move(slot.value);
+					slot.sequence.store(pos + kCapacity, std::memory_order_release);
+					m_spaceEpoch.fetch_add(1, std::memory_order_release);
+					m_spaceEpoch.notify_one();
+					return true;
+				}
+			} else if (diff < 0) {
+				return false;
+			} else {
+				pos = m_dequeuePos.load(std::memory_order_relaxed);
+			}
+		}
+	}
+
+	bool WaitEnqueue(T&& value, const std::atomic<bool>& stopping) {
+		while (!stopping.load(std::memory_order_acquire)) {
+			if (TryEnqueue(std::move(value))) {
+				return true;
+			}
+
+			const uint32_t observedEpoch = m_spaceEpoch.load(std::memory_order_acquire);
+			if (TryEnqueue(std::move(value))) {
+				return true;
+			}
+			if (stopping.load(std::memory_order_acquire)) {
+				break;
+			}
+			m_spaceEpoch.wait(observedEpoch, std::memory_order_acquire);
+		}
+		return false;
+	}
+
+	bool WaitDequeue(T& value, const std::atomic<bool>& stopping) {
+		while (!stopping.load(std::memory_order_acquire)) {
+			if (TryDequeue(value)) {
+				return true;
+			}
+
+			const uint32_t observedEpoch = m_dataEpoch.load(std::memory_order_acquire);
+			if (TryDequeue(value)) {
+				return true;
+			}
+			if (stopping.load(std::memory_order_acquire)) {
+				break;
+			}
+			m_dataEpoch.wait(observedEpoch, std::memory_order_acquire);
+		}
+		return false;
+	}
+
+	void NotifyAllWaiters() {
+		m_dataEpoch.fetch_add(1, std::memory_order_release);
+		m_spaceEpoch.fetch_add(1, std::memory_order_release);
+		m_dataEpoch.notify_all();
+		m_spaceEpoch.notify_all();
+	}
+
+private:
+	static_assert(CapacityLog2 == 8 || CapacityLog2 == 16, "CapacityLog2 must be 8 or 16.");
+	static_assert(sizeof(std::atomic<uint32_t>) <= kCacheLineSize,
+		"atomic<uint32_t> is larger than the configured cache line size");
+	static constexpr uint32_t kCapacity = (1u << CapacityLog2);
+	static constexpr uint32_t kMask = (kCapacity - 1u);
+
+	struct Slot {
+		std::atomic<uint32_t> sequence{0};
+		T value{};
+	};
+
+	std::unique_ptr<Slot[]> m_buffer;
+	alignas(kCacheLineSize) std::atomic<uint32_t> m_enqueuePos{0};
+	char m_enqueuePad[kCacheLineSize - sizeof(std::atomic<uint32_t>)]{};
+	alignas(kCacheLineSize) std::atomic<uint32_t> m_dequeuePos{0};
+	char m_dequeuePad[kCacheLineSize - sizeof(std::atomic<uint32_t>)]{};
+	alignas(kCacheLineSize) std::atomic<uint32_t> m_dataEpoch{0};
+	alignas(kCacheLineSize) std::atomic<uint32_t> m_spaceEpoch{0};
+};
 
 class ResourceManager {
 public:
@@ -117,18 +240,14 @@ private:
 	std::unordered_map<AssetHandle, std::string> m_handleToPath;
 	std::unordered_map<std::string, std::shared_ptr<ResourceLoader>> m_loaders;
 
-	bool m_stopping = false;
-	std::deque<IoTask> m_ioTasks;
-	std::deque<DecodeTask> m_decodeTasks;
-	std::deque<UploadTask> m_uploadTasks;
+	std::atomic<bool> m_stopping{false};
+	LockFreeMpmcQueue<IoTask> m_ioTasks;
+	LockFreeMpmcQueue<DecodeTask> m_decodeTasks;
+	LockFreeMpmcQueue<UploadTask> m_uploadTasks;
 
 	std::vector<std::thread> m_ioWorkers;
 	std::vector<std::thread> m_decodeWorkers;
 	std::thread m_uploadWorker;
-
-	std::condition_variable m_ioCv;
-	std::condition_variable m_decodeCv;
-	std::condition_variable m_uploadCv;
 };
 
 } // namespace Resource

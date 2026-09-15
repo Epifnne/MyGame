@@ -1,8 +1,30 @@
 #include "Platform/Window.h"
+#include "Core/Input.h"
 #include <iostream>
 
 namespace Runtime {
 namespace Platform {
+
+namespace {
+
+Runtime::Core::KeyCode ToRuntimeMouseButton(int glfwButton) {
+    switch (glfwButton) {
+    case GLFW_MOUSE_BUTTON_LEFT:
+        return Runtime::Core::Mouse_Left;
+    case GLFW_MOUSE_BUTTON_RIGHT:
+        return Runtime::Core::Mouse_Right;
+    case GLFW_MOUSE_BUTTON_MIDDLE:
+        return Runtime::Core::Mouse_Middle;
+    case GLFW_MOUSE_BUTTON_4:
+        return Runtime::Core::Mouse_Button4;
+    case GLFW_MOUSE_BUTTON_5:
+        return Runtime::Core::Mouse_Button5;
+    default:
+        return Runtime::Core::Key_Unknown;
+    }
+}
+
+} // namespace
 
 static void GLFWErrorCallback(int error, const char* description) {
     std::cerr << "GLFW Error [" << error << "] : " << description << std::endl;
@@ -43,6 +65,56 @@ bool Window::Initialize(int width, int height, const char* title, bool vsync) {
 
     m_width = width;
     m_height = height;
+
+    auto* input = &Runtime::Core::Input::Get();
+    glfwSetWindowUserPointer(m_window, input);
+
+    glfwSetKeyCallback(m_window, [](GLFWwindow* window, int key, int, int action, int) {
+        auto* runtimeInput = static_cast<Runtime::Core::Input*>(glfwGetWindowUserPointer(window));
+        if (!runtimeInput || key < 0 || key >= Runtime::Core::Key_Count) {
+            return;
+        }
+
+        const auto runtimeKey = static_cast<Runtime::Core::KeyCode>(key);
+        if (action == GLFW_PRESS || action == GLFW_REPEAT) {
+            runtimeInput->SetKeyDown(runtimeKey);
+        } else if (action == GLFW_RELEASE) {
+            runtimeInput->SetKeyUp(runtimeKey);
+        }
+    });
+
+    glfwSetMouseButtonCallback(m_window, [](GLFWwindow* window, int button, int action, int) {
+        auto* runtimeInput = static_cast<Runtime::Core::Input*>(glfwGetWindowUserPointer(window));
+        if (!runtimeInput) {
+            return;
+        }
+
+        const auto runtimeButton = ToRuntimeMouseButton(button);
+        if (runtimeButton == Runtime::Core::Key_Unknown) {
+            return;
+        }
+
+        if (action == GLFW_PRESS) {
+            runtimeInput->SetKeyDown(runtimeButton);
+        } else if (action == GLFW_RELEASE) {
+            runtimeInput->SetKeyUp(runtimeButton);
+        }
+    });
+
+    glfwSetCursorPosCallback(m_window, [](GLFWwindow* window, double x, double y) {
+        auto* runtimeInput = static_cast<Runtime::Core::Input*>(glfwGetWindowUserPointer(window));
+        if (runtimeInput) {
+            runtimeInput->SetMousePosition(x, y);
+        }
+    });
+
+    glfwSetScrollCallback(m_window, [](GLFWwindow* window, double, double yoffset) {
+        auto* runtimeInput = static_cast<Runtime::Core::Input*>(glfwGetWindowUserPointer(window));
+        if (runtimeInput) {
+            runtimeInput->SetScrollDelta(static_cast<float>(yoffset));
+        }
+    });
+
     m_initialized = true;
 
     return true;

@@ -7,7 +7,7 @@ target_link_libraries(LocalServerDemo
 		RuntimeLib
 )
 
-target_compile_features(LocalServerDemo PRIVATE cxx_std_17)
+target_compile_features(LocalServerDemo PRIVATE cxx_std_20)
 
 set_target_properties(LocalServerDemo PROPERTIES
 	RUNTIME_OUTPUT_DIRECTORY ${MYGAME_OUTPUT_ROOT}

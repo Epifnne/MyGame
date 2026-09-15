@@ -1,5 +1,6 @@
 # Build artifacts
 Build/
+Build*/
 Bin/
 MyGame/
 

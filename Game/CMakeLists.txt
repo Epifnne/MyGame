@@ -8,6 +8,8 @@ add_library(GameLib STATIC ${GAME_SOURCES})
 target_include_directories(GameLib
 	PUBLIC
 		${CMAKE_CURRENT_SOURCE_DIR}/include
+	PRIVATE
+		${CMAKE_SOURCE_DIR}/ThirdParty/stb
 )
 
 target_link_libraries(GameLib
@@ -16,4 +18,4 @@ target_link_libraries(GameLib
 		SharedLib
 )
 
-target_compile_features(GameLib PUBLIC cxx_std_17)
+target_compile_features(GameLib PUBLIC cxx_std_20)

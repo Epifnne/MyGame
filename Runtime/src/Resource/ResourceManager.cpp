@@ -338,16 +338,17 @@ std::future<std::shared_ptr<Resource>> ResourceManager::EnqueueLoadTask(const st
     auto result = std::make_shared<AsyncResult>();
     auto future = result->promise.get_future();
 
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (m_stopping) {
-            result->promise.set_value(nullptr);
-            return future;
-        }
-        m_ioTasks.push_back(IoTask{guidOrVirtualPath, result});
+    if (m_stopping.load(std::memory_order_acquire)) {
+        result->promise.set_value(nullptr);
+        return future;
     }
 
-    m_ioCv.notify_one();
+    IoTask task{guidOrVirtualPath, result};
+    if (m_ioTasks.WaitEnqueue(std::move(task), m_stopping)) {
+        return future;
+    }
+
+    ResolveAndFail(result);
     return future;
 }
 
@@ -374,13 +375,10 @@ void ResourceManager::StartWorkers(size_t workerCount) {
 }
 
 void ResourceManager::StopWorkers() {
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        m_stopping = true;
-    }
-    m_ioCv.notify_all();
-    m_decodeCv.notify_all();
-    m_uploadCv.notify_all();
+    m_stopping.store(true, std::memory_order_release);
+    m_ioTasks.NotifyAllWaiters();
+    m_decodeTasks.NotifyAllWaiters();
+    m_uploadTasks.NotifyAllWaiters();
 
     for (std::thread& worker : m_ioWorkers) {
         if (worker.joinable()) {
@@ -400,42 +398,25 @@ void ResourceManager::StopWorkers() {
         m_uploadWorker.join();
     }
 
-    std::deque<IoTask> pendingIo;
-    std::deque<DecodeTask> pendingDecode;
-    std::deque<UploadTask> pendingUpload;
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        pendingIo.swap(m_ioTasks);
-        pendingDecode.swap(m_decodeTasks);
-        pendingUpload.swap(m_uploadTasks);
+    IoTask pendingIo;
+    while (m_ioTasks.TryDequeue(pendingIo)) {
+        ResolveAndFail(pendingIo.result);
     }
-
-    for (auto& task : pendingIo) {
-        ResolveAndFail(task.result);
+    DecodeTask pendingDecode;
+    while (m_decodeTasks.TryDequeue(pendingDecode)) {
+        ResolveAndFail(pendingDecode.result);
     }
-    for (auto& task : pendingDecode) {
-        ResolveAndFail(task.result);
-    }
-    for (auto& task : pendingUpload) {
-        ResolveAndFail(task.result);
+    UploadTask pendingUpload;
+    while (m_uploadTasks.TryDequeue(pendingUpload)) {
+        ResolveAndFail(pendingUpload.result);
     }
 }
 
 void ResourceManager::IoWorkerMain() {
     while (true) {
         IoTask task;
-        {
-            std::unique_lock<std::mutex> lock(m_mutex);
-            m_ioCv.wait(lock, [this]() {
-                return m_stopping || !m_ioTasks.empty();
-            });
-
-            if (m_stopping && m_ioTasks.empty()) {
-                return;
-            }
-
-            task = std::move(m_ioTasks.front());
-            m_ioTasks.pop_front();
+        if (!m_ioTasks.WaitDequeue(task, m_stopping)) {
+            return;
         }
 
         const auto metadata = ResolveMetadata(task.guidOrVirtualPath);
@@ -461,29 +442,18 @@ void ResourceManager::IoWorkerMain() {
             continue;
         }
 
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            m_decodeTasks.push_back(DecodeTask{metadata.value(), loader, std::move(rawData.value()), task.result});
+        DecodeTask decodeTask{metadata.value(), loader, std::move(rawData.value()), task.result};
+        if (!m_decodeTasks.WaitEnqueue(std::move(decodeTask), m_stopping)) {
+            ResolveAndFail(task.result);
         }
-        m_decodeCv.notify_one();
     }
 }
 
 void ResourceManager::DecodeWorkerMain() {
     while (true) {
         DecodeTask task;
-        {
-            std::unique_lock<std::mutex> lock(m_mutex);
-            m_decodeCv.wait(lock, [this]() {
-                return m_stopping || !m_decodeTasks.empty();
-            });
-
-            if (m_stopping && m_decodeTasks.empty()) {
-                return;
-            }
-
-            task = std::move(m_decodeTasks.front());
-            m_decodeTasks.pop_front();
+        if (!m_decodeTasks.WaitDequeue(task, m_stopping)) {
+            return;
         }
 
         auto resource = task.loader->Decode(task.metadata, std::move(task.rawData));
@@ -492,29 +462,18 @@ void ResourceManager::DecodeWorkerMain() {
             continue;
         }
 
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            m_uploadTasks.push_back(UploadTask{std::move(task.metadata), std::move(task.loader), std::move(resource), task.result});
+        UploadTask uploadTask{std::move(task.metadata), std::move(task.loader), std::move(resource), task.result};
+        if (!m_uploadTasks.WaitEnqueue(std::move(uploadTask), m_stopping)) {
+            ResolveAndFail(task.result);
         }
-        m_uploadCv.notify_one();
     }
 }
 
 void ResourceManager::UploadWorkerMain() {
     while (true) {
         UploadTask task;
-        {
-            std::unique_lock<std::mutex> lock(m_mutex);
-            m_uploadCv.wait(lock, [this]() {
-                return m_stopping || !m_uploadTasks.empty();
-            });
-
-            if (m_stopping && m_uploadTasks.empty()) {
-                return;
-            }
-
-            task = std::move(m_uploadTasks.front());
-            m_uploadTasks.pop_front();
+        if (!m_uploadTasks.WaitDequeue(task, m_stopping)) {
+            return;
         }
 
         if (!task.loader->Upload(task.metadata, task.resource)) {

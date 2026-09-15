@@ -38,7 +38,7 @@ jobs:
       - name: Install Linux deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake pkg-config libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxi-dev libxcursor-dev libglu1-mesa-dev zip
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxi-dev libxcursor-dev libglu1-mesa-dev zip
 
       - name: Install Python deps for glad
         shell: bash
@@ -48,27 +48,15 @@ jobs:
 
       - name: Configure
         shell: bash
-        run: cmake -S . -B Build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DPython_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')" -DPython3_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')"
+        run: cmake -S . -B Build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DPython_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')" -DPython3_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')"
 
       - name: Build
         shell: bash
-        run: |
-          if grep -q '^CMAKE_CONFIGURATION_TYPES:' Build/CMakeCache.txt; then
-            echo "Multi-config generator detected, building Release config"
-            cmake --build Build --config Release --parallel
-          else
-            echo "Single-config generator detected, building active config"
-            cmake --build Build --parallel
-          fi
+        run: cmake --build Build --parallel
 
       - name: Run tests
         shell: bash
-        run: |
-          if grep -q '^CMAKE_CONFIGURATION_TYPES:' Build/CMakeCache.txt; then
-            ctest --test-dir Build --output-on-failure -C Release
-          else
-            ctest --test-dir Build --output-on-failure
-          fi
+        run: ctest --test-dir Build --output-on-failure
 
       - name: Package binaries
         shell: bash
@@ -107,6 +95,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Set up MSVC for Ninja
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Install Python deps for glad
         shell: pwsh
         run: |
@@ -119,29 +110,15 @@ jobs:
           $py = python -c "import sys; print(sys.executable)"
           $outRoot = Join-Path (Get-Location) 'MyGame'
           $outLib = Join-Path $outRoot 'lib'
-          cmake -S . -B Build -DBUILD_TESTING=ON -DPython_EXECUTABLE="$py" -DPython3_EXECUTABLE="$py" -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="$outRoot" -DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE="$outRoot" -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$outLib" -DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE="$outLib" -DCMAKE_ARCHIVE_OUTPUT_DIRECTORY="$outLib" -DCMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE="$outLib"
+          cmake -S . -B Build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DPython_EXECUTABLE="$py" -DPython3_EXECUTABLE="$py" -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="$outRoot" -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$outLib" -DCMAKE_ARCHIVE_OUTPUT_DIRECTORY="$outLib"
 
       - name: Build
         shell: pwsh
-        run: |
-          $isMultiConfig = Select-String -Path Build/CMakeCache.txt -Pattern '^CMAKE_CONFIGURATION_TYPES:' -Quiet
-          if ($isMultiConfig) {
-            Write-Host 'Multi-config generator detected, building Release config'
-            cmake --build Build --config Release --parallel
-          } else {
-            Write-Host 'Single-config generator detected, building active config'
-            cmake --build Build --parallel
-          }
+        run: cmake --build Build --parallel
 
       - name: Run tests
         shell: pwsh
-        run: |
-          $isMultiConfig = Select-String -Path Build/CMakeCache.txt -Pattern '^CMAKE_CONFIGURATION_TYPES:' -Quiet
-          if ($isMultiConfig) {
-            ctest --test-dir Build --output-on-failure -C Release
-          } else {
-            ctest --test-dir Build --output-on-failure
-          }
+        run: ctest --test-dir Build --output-on-failure
 
       - name: Package binaries
         shell: pwsh

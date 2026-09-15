@@ -20,6 +20,15 @@ struct PhysicsMaterial {
 		result.restitution = std::clamp((a.restitution + b.restitution) * 0.5f, 0.0f, 1.0f);
 		return result;
 	}
+
+	// Value comparison used by the midphase sync because the mutable Material()
+	// accessor cannot bump the collider revision (frozen invalidation matrix).
+	bool operator==(const PhysicsMaterial& other) const {
+		return staticFriction == other.staticFriction &&
+			dynamicFriction == other.dynamicFriction &&
+			restitution == other.restitution;
+	}
+	bool operator!=(const PhysicsMaterial& other) const { return !(*this == other); }
 };
 
 } // namespace Physics

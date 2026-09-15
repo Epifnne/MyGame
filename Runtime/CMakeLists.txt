@@ -34,4 +34,4 @@ if(WIN32)
 endif()
 
 target_compile_definitions(RuntimeLib PRIVATE GLFW_INCLUDE_NONE)
-target_compile_features(RuntimeLib PUBLIC cxx_std_17)
+target_compile_features(RuntimeLib PUBLIC cxx_std_20)

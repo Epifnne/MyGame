@@ -2,7 +2,11 @@
 
 #pragma once
 
+#include<cstddef>
 #include<cstdint>
+#include<functional>
+#include<utility>
+#include<vector>
 
 namespace Runtime {
 namespace Core {
@@ -62,32 +66,117 @@ enum KeyStateFlags : uint8_t {
     State_Released = 1 << 2,
 };
 
+enum class InputEventType : uint8_t {
+    KeyDown,
+    KeyUp,
+    MouseMove,
+    Scroll
+};
+
+struct InputEvent {
+    InputEventType type = InputEventType::MouseMove;
+    KeyCode key = Key_Unknown;
+    double mouseX = 0.0;
+    double mouseY = 0.0;
+    float scrollDelta = 0.0f;
+};
+
 class Input {
 public:
+    using EventHandler = std::function<void(const InputEvent&)>;
+    using EventHandlerId = uint32_t;
+
     static Input& Get() {
         static Input instance;
         return instance;
     }
     
-    // frame update - should be called at the start of each frame to reset transient states
+    // frame update - clear transient flags then consume buffered input from previous frame
     void BeginFrame() {
         for (int i = 0; i < Key_Count; ++i) {
             m_states[i] &= ~(State_Pressed | State_Released);
         }
         m_scrollDelta = 0.0f;
+
+        m_dispatchHandlers = m_eventHandlers;
+
+        for (const InputEvent& event : m_pendingEvents) {
+            switch (event.type) {
+            case InputEventType::KeyDown:
+                if (!(m_states[event.key] & State_Down)) {
+                    m_states[event.key] |= State_Down | State_Pressed;
+                }
+                break;
+            case InputEventType::KeyUp:
+                if (m_states[event.key] & State_Down) {
+                    m_states[event.key] = (m_states[event.key] & ~State_Down) | State_Released;
+                }
+                break;
+            case InputEventType::MouseMove:
+                m_mouseX = event.mouseX;
+                m_mouseY = event.mouseY;
+                break;
+            case InputEventType::Scroll:
+                m_scrollDelta += event.scrollDelta;
+                break;
+            }
+
+            for (const EventHandlerEntry& handler : m_dispatchHandlers) {
+                if (handler.callback) {
+                    handler.callback(event);
+                }
+            }
+        }
+        m_pendingEvents.clear();
     }
     
     // key state updates - called by platform layer
     void SetKeyDown(KeyCode key) {
-        if (!(m_states[key] & State_Down)) {
-            m_states[key] |= State_Down | State_Pressed;
+        if (key <= Key_Unknown || key >= Key_Count) {
+            return;
         }
+        InputEvent event;
+        event.type = InputEventType::KeyDown;
+        event.key = key;
+        m_pendingEvents.push_back(event);
     }
     
     void SetKeyUp(KeyCode key) {
-        if (m_states[key] & State_Down) {
-            m_states[key] = (m_states[key] & ~State_Down) | State_Released;
+        if (key <= Key_Unknown || key >= Key_Count) {
+            return;
         }
+        InputEvent event;
+        event.type = InputEventType::KeyUp;
+        event.key = key;
+        m_pendingEvents.push_back(event);
+    }
+
+    EventHandlerId RegisterEventHandler(EventHandler handler) {
+        if (!handler) {
+            return 0;
+        }
+
+        EventHandlerId id = m_nextHandlerId++;
+        m_eventHandlers.push_back(EventHandlerEntry{id, std::move(handler)});
+        return id;
+    }
+
+    bool UnregisterEventHandler(EventHandlerId id) {
+        if (id == 0) {
+            return false;
+        }
+
+        for (size_t i = 0; i < m_eventHandlers.size(); ++i) {
+            if (m_eventHandlers[i].id == id) {
+                m_eventHandlers.erase(m_eventHandlers.begin() + static_cast<std::ptrdiff_t>(i));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void ClearEventHandlers() {
+        m_eventHandlers.clear();
     }
     
     // key state queries
@@ -105,8 +194,11 @@ public:
     
     // mouse position
     void SetMousePosition(double x, double y) {
-        m_mouseX = x;
-        m_mouseY = y;
+        InputEvent event;
+        event.type = InputEventType::MouseMove;
+        event.mouseX = x;
+        event.mouseY = y;
+        m_pendingEvents.push_back(event);
     }
     
     double GetMouseX() const { return m_mouseX; }
@@ -120,20 +212,37 @@ public:
     }
     
     // scroll wheel
-    void SetScrollDelta(float delta) { m_scrollDelta = delta; }
+    void SetScrollDelta(float delta) {
+        InputEvent event;
+        event.type = InputEventType::Scroll;
+        event.scrollDelta = delta;
+        m_pendingEvents.push_back(event);
+    }
     float GetScrollDelta() const { return m_scrollDelta; }
     
 private:
+    struct EventHandlerEntry {
+        EventHandlerId id = 0;
+        EventHandler callback;
+    };
+
     Input() {
         for (int i = 0; i < Key_Count; ++i) {
             m_states[i] = State_None;
         }
+        m_pendingEvents.reserve(128);
+        m_eventHandlers.reserve(16);
+        m_dispatchHandlers.reserve(16);
     }
     
     uint8_t m_states[Key_Count];
     double m_mouseX = 0.0, m_mouseY = 0.0;
     double m_lastMouseX = 0.0, m_lastMouseY = 0.0;
     float m_scrollDelta = 0.0f;
+    std::vector<InputEvent> m_pendingEvents;
+    std::vector<EventHandlerEntry> m_eventHandlers;
+    std::vector<EventHandlerEntry> m_dispatchHandlers;
+    EventHandlerId m_nextHandlerId = 1;
 };
 
 }// namespace Core

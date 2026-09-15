@@ -36,7 +36,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake pkg-config libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxi-dev libxcursor-dev libglu1-mesa-dev
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxi-dev libxcursor-dev libglu1-mesa-dev
+
+      - name: Set up MSVC for Ninja
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install Python deps for glad
         shell: bash
@@ -51,7 +55,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p Build
-          cmake -S . -B Build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DPython_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')" -DPython3_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')" 2>&1 | tee Build/configure.log
+          cmake -S . -B Build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DPython_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')" -DPython3_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')" 2>&1 | tee Build/configure.log
 
       - name: Dump configure logs on failure
         if: steps.configure.outcome == 'failure'
@@ -92,7 +96,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cmake --build Build --config Release --parallel 2>&1 | tee Build/build.log
+          cmake --build Build --parallel 2>&1 | tee Build/build.log
 
       - name: Dump build logs on failure
         if: steps.build.outcome == 'failure'
@@ -127,7 +131,7 @@ jobs:
           fi
 
       - name: Run tests
-        run: ctest --test-dir Build --output-on-failure -C Release
+        run: ctest --test-dir Build --output-on-failure
 
       - name: Note about DemoApp
         run: |

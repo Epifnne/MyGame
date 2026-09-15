@@ -9,45 +9,219 @@ namespace Runtime {
 namespace Physics {
 
 namespace {
+void SortFace(std::vector<glm::vec3>& face, const glm::vec3& normal) {
+    if (face.size() < 3) {
+        return;
+    }
 
-bool BuildFallbackContact(
+    glm::vec3 center(0.0f);
+    for (const glm::vec3& vertex : face) {
+        center += vertex;
+    }
+    center /= static_cast<float>(face.size());
+
+    const glm::vec3 tangent = glm::normalize(
+        std::abs(normal.x) < 0.8f
+            ? glm::cross(normal, glm::vec3(1.0f, 0.0f, 0.0f))
+            : glm::cross(normal, glm::vec3(0.0f, 1.0f, 0.0f)));
+    const glm::vec3 bitangent = glm::cross(normal, tangent);
+    std::sort(face.begin(), face.end(), [&](const glm::vec3& lhs, const glm::vec3& rhs) {
+        const glm::vec3 lhsOffset = lhs - center;
+        const glm::vec3 rhsOffset = rhs - center;
+        const float lhsAngle = std::atan2(glm::dot(lhsOffset, bitangent), glm::dot(lhsOffset, tangent));
+        const float rhsAngle = std::atan2(glm::dot(rhsOffset, bitangent), glm::dot(rhsOffset, tangent));
+        return lhsAngle < rhsAngle;
+    });
+}
+
+std::vector<glm::vec3> ClipPolygonAgainstPlane(
+    const std::vector<glm::vec3>& polygon,
+    const glm::vec3& planePoint,
+    const glm::vec3& planeNormal) {
+    std::vector<glm::vec3> clipped;
+    if (polygon.empty()) {
+        return clipped;
+    }
+
+    glm::vec3 previous = polygon.back();
+    float previousDistance = glm::dot(planeNormal, previous - planePoint);
+    for (const glm::vec3& current : polygon) {
+        const float currentDistance = glm::dot(planeNormal, current - planePoint);
+        const bool previousInside = previousDistance <= 1e-5f;
+        const bool currentInside = currentDistance <= 1e-5f;
+        if (previousInside != currentInside) {
+            const float denominator = previousDistance - currentDistance;
+            if (std::abs(denominator) > 1e-8f) {
+                clipped.push_back(previous + (current - previous) * (previousDistance / denominator));
+            }
+        }
+        if (currentInside) {
+            clipped.push_back(current);
+        }
+        previous = current;
+        previousDistance = currentDistance;
+    }
+    return clipped;
+}
+
+void AddReducedContactPoints(
+    const std::vector<ContactPoint>& candidates,
+    const glm::vec3& normal,
+    ContactManifold& manifold) {
+    if (candidates.size() <= ContactManifold::kMaxContactPoints) {
+        for (const ContactPoint& candidate : candidates) {
+            manifold.AddPoint(candidate);
+        }
+        return;
+    }
+
+    const glm::vec3 tangent = glm::normalize(
+        std::abs(normal.x) < 0.8f
+            ? glm::cross(normal, glm::vec3(1.0f, 0.0f, 0.0f))
+            : glm::cross(normal, glm::vec3(0.0f, 1.0f, 0.0f)));
+    const glm::vec3 bitangent = glm::cross(normal, tangent);
+    const glm::vec3 directions[] = {tangent, -tangent, bitangent, -bitangent};
+    for (const glm::vec3& direction : directions) {
+        const ContactPoint* best = nullptr;
+        float bestProjection = std::numeric_limits<float>::lowest();
+        for (const ContactPoint& candidate : candidates) {
+            const float projection = glm::dot(candidate.position, direction);
+            if (projection > bestProjection) {
+                bestProjection = projection;
+                best = &candidate;
+            }
+        }
+        bool duplicate = false;
+        for (std::size_t index = 0; best && index < manifold.pointCount; ++index) {
+            const glm::vec3 delta = manifold.Point(index).position - best->position;
+            duplicate = duplicate || glm::dot(delta, delta) <= 1e-8f;
+        }
+        if (best && !duplicate) {
+            manifold.AddPoint(*best);
+        }
+    }
+}
+
+void ClosestPointsOnSegments(
+    const glm::vec3& a0,
+    const glm::vec3& a1,
+    const glm::vec3& b0,
+    const glm::vec3& b1,
+    glm::vec3& closestA,
+    glm::vec3& closestB) {
+    const glm::vec3 edgeA = a1 - a0;
+    const glm::vec3 edgeB = b1 - b0;
+    const glm::vec3 offset = a0 - b0;
+    const float aa = glm::dot(edgeA, edgeA);
+    const float bb = glm::dot(edgeB, edgeB);
+    const float ab = glm::dot(edgeA, edgeB);
+    const float ar = glm::dot(edgeA, offset);
+    const float br = glm::dot(edgeB, offset);
+    const float denominator = aa * bb - ab * ab;
+    float parameterA = denominator > 1e-8f ? std::clamp((ab * br - bb * ar) / denominator, 0.0f, 1.0f) : 0.0f;
+    float parameterB = bb > 1e-8f ? std::clamp((ab * parameterA + br) / bb, 0.0f, 1.0f) : 0.0f;
+    if (aa > 1e-8f) {
+        parameterA = std::clamp((ab * parameterB - ar) / aa, 0.0f, 1.0f);
+    }
+    closestA = a0 + parameterA * edgeA;
+    closestB = b0 + parameterB * edgeB;
+}
+
+bool BuildFeatureManifold(
     const Collider& colliderA,
     const ShapeTransform& tfA,
-    const RigidBody& bodyA,
     const Collider& colliderB,
     const ShapeTransform& tfB,
-    const RigidBody& bodyB,
-    ContactManifold& outContact) {
-    const AABB a = colliderA.ComputeAABB(tfA);
-    const AABB b = colliderB.ComputeAABB(tfB);
-    if (!a.Intersects(b)) {
+    const glm::vec3& normal,
+    ContactManifold& manifold) {
+    SupportFeature featureA = colliderA.Shape()->GetSupportFeature(tfA, normal);
+    SupportFeature featureB = colliderB.Shape()->GetSupportFeature(tfB, -normal);
+    if (featureA.vertices.empty() || featureB.vertices.empty()) {
         return false;
     }
 
-    const float overlapX = std::min(a.max.x, b.max.x) - std::max(a.min.x, b.min.x);
-    const float overlapY = std::min(a.max.y, b.max.y) - std::max(a.min.y, b.min.y);
-    const float overlapZ = std::min(a.max.z, b.max.z) - std::max(a.min.z, b.min.z);
-    if (overlapX <= 0.0f || overlapY <= 0.0f || overlapZ <= 0.0f) {
+    if (featureA.type == SupportFeatureType::Edge && featureB.type == SupportFeatureType::Edge) {
+        glm::vec3 closestA;
+        glm::vec3 closestB;
+        ClosestPointsOnSegments(
+            featureA.vertices[0], featureA.vertices[1],
+            featureB.vertices[0], featureB.vertices[1],
+            closestA, closestB);
+        manifold.ClearPoints();
+        ContactPoint point;
+        point.position = 0.5f * (closestA + closestB);
+        point.penetration = std::max(glm::dot(closestA - closestB, normal), 0.0f);
+        manifold.AddPoint(point);
+        return true;
+    }
+
+    const bool aIsFace = featureA.type == SupportFeatureType::Face;
+    const bool bIsFace = featureB.type == SupportFeatureType::Face;
+    if (!aIsFace && !bIsFace) {
         return false;
     }
 
-    glm::vec3 normal = tfB.position - tfA.position;
-    if (glm::dot(normal, normal) < 1e-8f) {
-        normal = glm::vec3(0.0f, 1.0f, 0.0f);
-    } else {
-        normal = glm::normalize(normal);
+    const bool useAAsReference = aIsFace && (!bIsFace || featureA.vertices.size() >= featureB.vertices.size());
+    std::vector<glm::vec3> reference = useAAsReference
+        ? std::move(featureA.vertices)
+        : std::move(featureB.vertices);
+    std::vector<glm::vec3> incident = useAAsReference
+        ? std::move(featureB.vertices)
+        : std::move(featureA.vertices);
+    const glm::vec3 referenceNormal = useAAsReference ? normal : -normal;
+    SortFace(reference, referenceNormal);
+    if (incident.size() >= 3) {
+        SortFace(incident, -referenceNormal);
     }
 
-    const glm::vec3 relativeVelocity = bodyB.LinearVelocity() - bodyA.LinearVelocity();
-    if (glm::dot(relativeVelocity, normal) > 0.0f) {
-        normal = -normal;
+    for (std::size_t index = 0; index < reference.size() && !incident.empty(); ++index) {
+        const glm::vec3& edgeStart = reference[index];
+        const glm::vec3& edgeEnd = reference[(index + 1) % reference.size()];
+        const glm::vec3 sideNormal = glm::cross(edgeEnd - edgeStart, referenceNormal);
+        if (glm::dot(sideNormal, sideNormal) > 1e-10f) {
+            incident = ClipPolygonAgainstPlane(incident, edgeStart, glm::normalize(sideNormal));
+        }
     }
 
-    outContact.normal = normal;
-    outContact.point.penetration = std::min(overlapX, std::min(overlapY, overlapZ));
-    outContact.point.position = 0.5f * (tfA.position + tfB.position);
-    outContact.point.normalImpulse = 0.0f;
-    return true;
+    std::vector<ContactPoint> candidates;
+    candidates.reserve(incident.size());
+    const glm::vec3 referencePoint = reference.front();
+    for (const glm::vec3& incidentPoint : incident) {
+        const float separation = glm::dot(incidentPoint - referencePoint, referenceNormal);
+        if (separation <= 1e-4f) {
+            ContactPoint point;
+            point.position = incidentPoint - 0.5f * separation * referenceNormal;
+            point.penetration = std::max(-separation, 0.0f);
+            candidates.push_back(point);
+        }
+    }
+
+    if (candidates.empty()) {
+        return false;
+    }
+
+    glm::vec3 centroid(0.0f);
+    float deepestPenetration = 0.0f;
+    for (const ContactPoint& candidate : candidates) {
+        centroid += candidate.position;
+        deepestPenetration = std::max(deepestPenetration, candidate.penetration);
+    }
+    manifold.ClearPoints();
+    AddReducedContactPoints(candidates, normal, manifold);
+    centroid /= static_cast<float>(candidates.size());
+
+    // The first point doubles as the manifold's representative contact: it
+    // carries the deepest penetration and the candidates' centroid. Under the
+    // sequential-impulse solver the zero-angular-arm centroid acts as the
+    // load-distributing sink that keeps stacked configurations stable at low
+    // iteration counts; Phase 4 warm start relies on this behavior until a
+    // block solver or stable feature IDs can balance per-point loads.
+    if (manifold.pointCount > 0) {
+        ContactPoint& primary = manifold.Point(0);
+        primary.position = centroid;
+        primary.penetration = deepestPenetration;
+    }
+    return manifold.pointCount > 0;
 }
 
 glm::vec3 RefineContactPointForSpheres(
@@ -84,7 +258,9 @@ bool GjkEpaNarrowPhase::GenerateContact(
     const RigidBody& bodyA,
     const Collider& colliderB,
     const RigidBody& bodyB,
-    ContactManifold& outContact) const {
+    ContactManifold& outContact,
+    NarrowPhaseQueryStats& outStats) const {
+    outStats = {};
     ShapeTransform tfA;
     tfA.position = bodyA.Position();
     tfA.orientation = bodyA.Orientation();
@@ -98,33 +274,40 @@ bool GjkEpaNarrowPhase::GenerateContact(
     }
 
     Simplex simplex;
+    ++outStats.gjkCallCount;
     const QueryResult gjkResult = RunGjk(colliderA, tfA, colliderB, tfB, simplex);
     if (gjkResult == QueryResult::Separated) {
         return false;
     }
     if (gjkResult == QueryResult::Failed) {
-        return BuildFallbackContact(colliderA, tfA, bodyA, colliderB, tfB, bodyB, outContact);
+        ++outStats.gjkFailureCount;
+        return false;
     }
 
     EpaResult epa;
+    ++outStats.epaCallCount;
     const QueryResult epaResult = RunEpa(colliderA, tfA, colliderB, tfB, simplex, epa);
     if (epaResult == QueryResult::Separated) {
         return false;
     }
     if (epaResult == QueryResult::Failed) {
-        return BuildFallbackContact(colliderA, tfA, bodyA, colliderB, tfB, bodyB, outContact);
+        ++outStats.epaFailureCount;
+        return false;
     }
 
     outContact.normal = epa.normal;
-    outContact.point.penetration = epa.penetration;
-    outContact.point.position = RefineContactPointForSpheres(
+    outContact.ClearPoints();
+    ContactPoint primaryPoint;
+    primaryPoint.penetration = epa.penetration;
+    primaryPoint.position = RefineContactPointForSpheres(
         colliderA,
         tfA,
         colliderB,
         tfB,
         outContact.normal,
         epa.contactPoint);
-    outContact.point.normalImpulse = 0.0f;
+    outContact.AddPoint(primaryPoint);
+    BuildFeatureManifold(colliderA, tfA, colliderB, tfB, outContact.normal, outContact);
     return true;
 }
 
@@ -226,7 +409,7 @@ bool GjkEpaNarrowPhase::HandleTriangle(Simplex& simplex, glm::vec3& direction) c
     glm::vec3 abc = glm::cross(ab, ac);
 
     // Test whether the origin lies outside edge AB.
-    glm::vec3 abPerp = glm::cross(abc, ab);
+    glm::vec3 abPerp = glm::cross(ab, abc);
     if (glm::dot(abPerp, ao) > 0.0f) {
         // Keep edge AB and continue with the line-case search direction.
         simplex = {simplex[1], simplex[2]};
@@ -235,7 +418,7 @@ bool GjkEpaNarrowPhase::HandleTriangle(Simplex& simplex, glm::vec3& direction) c
     }
 
     // Test whether the origin lies outside edge AC.
-    glm::vec3 acPerp = glm::cross(ac, abc);
+    glm::vec3 acPerp = glm::cross(abc, ac);
     if (glm::dot(acPerp, ao) > 0.0f) {
         // Keep edge AC and continue with the line-case search direction.
         simplex = {simplex[0], simplex[2]};
@@ -304,8 +487,6 @@ GjkEpaNarrowPhase::EpaFace GjkEpaNarrowPhase::BuildFace(
     const glm::vec3 pc = vertices[c].point;
     glm::vec3 n = glm::cross(pb - pa, pc - pa);
     if (glm::dot(n, n) < kEpsilon) {
-        face.normal = glm::vec3(0.0f, 1.0f, 0.0f);
-        face.distance = 0.0f;
         return face;
     }
 
@@ -317,7 +498,51 @@ GjkEpaNarrowPhase::EpaFace GjkEpaNarrowPhase::BuildFace(
 
     face.normal = n;
     face.distance = glm::dot(n, pa);
+    face.valid = std::isfinite(face.distance);
     return face;
+}
+
+bool GjkEpaNarrowPhase::BuildEpaResult(
+    const std::vector<SupportPoint>& vertices,
+    const EpaFace& face,
+    EpaResult& out) const {
+    if (!face.valid) {
+        return false;
+    }
+
+    const glm::vec3& a = vertices[face.a].point;
+    const glm::vec3& b = vertices[face.b].point;
+    const glm::vec3& c = vertices[face.c].point;
+    const glm::vec3 closest = face.normal * face.distance;
+    const glm::vec3 v0 = b - a;
+    const glm::vec3 v1 = c - a;
+    const glm::vec3 v2 = closest - a;
+    const float d00 = glm::dot(v0, v0);
+    const float d01 = glm::dot(v0, v1);
+    const float d11 = glm::dot(v1, v1);
+    const float d20 = glm::dot(v2, v0);
+    const float d21 = glm::dot(v2, v1);
+    const float denominator = d00 * d11 - d01 * d01;
+    if (std::abs(denominator) < kEpsilon) {
+        return false;
+    }
+
+    const float weightB = (d11 * d20 - d01 * d21) / denominator;
+    const float weightC = (d00 * d21 - d01 * d20) / denominator;
+    const float weightA = 1.0f - weightB - weightC;
+    const glm::vec3 witnessA =
+        weightA * vertices[face.a].pointA +
+        weightB * vertices[face.b].pointA +
+        weightC * vertices[face.c].pointA;
+    const glm::vec3 witnessB =
+        weightA * vertices[face.a].pointB +
+        weightB * vertices[face.b].pointB +
+        weightC * vertices[face.c].pointB;
+
+    out.normal = face.normal;
+    out.penetration = std::max(face.distance, 0.0f);
+    out.contactPoint = 0.5f * (witnessA + witnessB);
+    return true;
 }
 
 GjkEpaNarrowPhase::QueryResult GjkEpaNarrowPhase::RunEpa(
@@ -334,17 +559,26 @@ GjkEpaNarrowPhase::QueryResult GjkEpaNarrowPhase::RunEpa(
     std::vector<SupportPoint> vertices = simplex;
     std::vector<EpaFace> faces;
     faces.reserve(16);
-    faces.push_back(BuildFace(vertices, 0, 1, 2));
-    faces.push_back(BuildFace(vertices, 0, 3, 1));
-    faces.push_back(BuildFace(vertices, 0, 2, 3));
-    faces.push_back(BuildFace(vertices, 1, 3, 2));
+    auto addFace = [&](int faceA, int faceB, int faceC) {
+        EpaFace face = BuildFace(vertices, faceA, faceB, faceC);
+        if (face.valid) {
+            faces.push_back(face);
+        }
+    };
+    addFace(0, 1, 2);
+    addFace(0, 3, 1);
+    addFace(0, 2, 3);
+    addFace(1, 3, 2);
+    if (faces.size() < 4) {
+        return QueryResult::Failed;
+    }
 
     for (int iter = 0; iter < kMaxEpaIterations; ++iter) {
         // Pick the face whose supporting plane is currently closest to the origin.
         int bestFace = -1;
         float minDistance = std::numeric_limits<float>::max();
         for (int i = 0; i < static_cast<int>(faces.size()); ++i) {
-            if (faces[i].distance < minDistance) {
+            if (faces[i].valid && faces[i].distance < minDistance) {
                 minDistance = faces[i].distance;
                 bestFace = i;
             }
@@ -358,13 +592,25 @@ GjkEpaNarrowPhase::QueryResult GjkEpaNarrowPhase::RunEpa(
         SupportPoint p = Support(a, tfA, b, tfB, face.normal);
         const float distance = glm::dot(face.normal, p.point);
 
+        bool duplicate = false;
+        for (const SupportPoint& vertex : vertices) {
+            const glm::vec3 delta = p.point - vertex.point;
+            if (glm::dot(delta, delta) <= kEpsilon * kEpsilon) {
+                duplicate = true;
+                break;
+            }
+        }
+
         // If pushing along the best-face normal no longer expands meaningfully,
         // treat this face as converged and export its normal/penetration.
-        if (distance - face.distance <= 1e-4f) {
-            out.normal = glm::normalize(face.normal);
-            out.penetration = std::max(distance, 0.0f);
-            out.contactPoint = 0.5f * (p.pointA + p.pointB);
-            return QueryResult::Intersecting;
+        if (duplicate || distance - face.distance <= 1e-4f) {
+            return BuildEpaResult(vertices, face, out)
+                ? QueryResult::Intersecting
+                : QueryResult::Failed;
+        }
+
+        if (vertices.size() >= kMaxEpaVertices) {
+            return QueryResult::Failed;
         }
 
         const int newIndex = static_cast<int>(vertices.size());
@@ -403,7 +649,16 @@ GjkEpaNarrowPhase::QueryResult GjkEpaNarrowPhase::RunEpa(
 
         // Stitch the hole by connecting each boundary edge to the new support point.
         for (const auto& e : boundary) {
-            faces.push_back(BuildFace(vertices, e[0], e[1], newIndex));
+            if (faces.size() >= kMaxEpaFaces) {
+                return QueryResult::Failed;
+            }
+            EpaFace newFace = BuildFace(vertices, e[0], e[1], newIndex);
+            if (newFace.valid) {
+                faces.push_back(newFace);
+            }
+        }
+        if (faces.empty()) {
+            return QueryResult::Failed;
         }
     }
 

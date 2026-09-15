@@ -3,11 +3,11 @@
 namespace Shared {
 namespace Config {
 
-const char* BuildConfig::EngineName() {
+const char* BuildConfig::EngineName() noexcept {
     return "MyGameEngine";
 }
 
-const char* BuildConfig::EngineVersion() {
+const char* BuildConfig::EngineVersion() noexcept {
     return "0.1.0";
 }
 

@@ -4,9 +4,10 @@ project(MyGame VERSION 1.0.0 LANGUAGES CXX C)
 include(CTest)
 
 # Set C++ standard
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Set build type if not specified
 if(NOT CMAKE_BUILD_TYPE)
@@ -24,7 +25,9 @@ add_subdirectory(ThirdParty)
 add_subdirectory(Shared)
 add_subdirectory(Runtime)
 add_subdirectory(Game)
+add_subdirectory(Sample)
 add_subdirectory(Tools)
+add_subdirectory(Benchmark)
 
 if(BUILD_TESTING)
     add_subdirectory(Tests)

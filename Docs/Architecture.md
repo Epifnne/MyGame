@@ -26,8 +26,10 @@ MyGame/
 ├─ Runtime/
 │  ├─ CMakeLists.txt
 │  ├─ include/
+│  │  ├─ AI/
 │  │  ├─ Core/
 │  │  ├─ ECS/
+│  │  ├─ Gameplay/
 │  │  ├─ Graphics/
 │  │  ├─ Network/
 │  │  ├─ Physics/
@@ -35,8 +37,10 @@ MyGame/
 │  │  ├─ Resource/
 │  │  └─ UI/
 │  └─ src/
+│     ├─ AI/
 │     ├─ Core/
 │     ├─ ECS/
+│     ├─ Gameplay/
 │     ├─ Graphics/
 │     ├─ Network/
 │     ├─ Physics/
@@ -130,6 +134,37 @@ Graphics 采用以下渲染流水线：
 - Shader.h：着色器程序抽象；管理编译结果、参数绑定与反射信息访问。
 - ShaderManager.h：着色器管理器；负责着色器缓存、查找、复用与生命周期管理。
 - RenderState.h：渲染状态描述；统一深度、混合、光栅化等 GPU 状态配置。
+
+### 5.3 ShadowMap/CSM 头文件架构（新增）
+
+为支持方向光 ShadowMap 与 Cascaded Shadow Maps（CSM），Graphics 头文件建议增加如下层次：
+
+- Light.h：光源抽象与基础参数；至少包含方向光方向、颜色、强度、阴影开关。
+- ShadowTypes.h：阴影公共数据结构；定义 `ShadowCascadeSettings`、`ShadowQualitySettings`、`ShadowFrameConstants`。
+- ShadowMap.h：单张阴影贴图资源抽象；管理深度纹理、FBO、分辨率、采样状态与生命周期。
+- ShadowAtlas.h：阴影图集/数组管理；统一管理多级级联贴图分配策略与布局信息。
+- ShadowCulling.h：阴影可见性裁剪；根据光源与级联体积筛选投射体/接收体。
+- ShadowRenderer.h：阴影渲染入口；组织阴影深度 Pass（Depth-only）并输出每级 LightViewProj。
+- CascadedShadow.h：级联切分与稳定化策略；负责 Split 计算、级联包围体构建、Texel Snapping。
+- LightingPass.h：主光照 Pass 阴影采样接口；执行阴影比较（Depth Compare）、PCF 过滤与级联混合。
+
+### 5.4 ShadowMap/CSM 渲染流水线（新增）
+
+建议采用如下可落地流程：
+
+1. 从主相机提取视锥参数并计算级联切分距离（CSM Split）。
+2. 为每级级联构建 Light View/Projection，并做稳定化（Texel Snapping）。
+3. 执行阴影深度 Pass：仅写深度，不输出颜色。
+4. 在主光照 Pass 中根据像素深度选择级联并采样阴影图。
+5. 执行 Bias（常量 + 斜率）与 PCF，输出阴影因子。
+6. 在级联边界执行过渡混合，减少分层接缝。
+
+### 5.5 与现有模块的边界约定（新增）
+
+1. Renderer 负责帧级调度，不直接维护级联算法细节；级联逻辑下沉到 `CascadedShadow`。
+2. Material/Shader 仅消费统一阴影常量，不感知贴图分配策略。
+3. Resource 模块负责阴影相关 shader 与配置资产加载，不负责运行时阴影图创建。
+4. Game 层仅通过 Light/Quality 配置阴影行为，不直接操作底层 Shadow FBO。
 
 ## 6. Runtime/Physics 头文件职责
 
@@ -296,3 +331,52 @@ UI 采用 ImGui 调试叠加层与自有保留模式 Widget 树双层架构，�
 - Widgets/TabView.h：标签页控件；多页签切换容器，管理标签页与对应内容面板。
 - Widgets/DropDown.h：下拉菜单控件；点击展开选项列表，支持搜索过滤与选中回调。
 - Widgets/Dialog.h：对话框控件；模态/非模态弹窗，支持标题、内容区与按钮组。
+
+## 11. Runtime/Gameplay 头文件职责
+
+### 11.1 模块分层
+
+Gameplay 作为通用玩法运行时框架，采用以下流程：
+
+1. 初始化实体级玩法状态（属性、标签、效果容器）。
+2. 管理基础属性与修饰器叠加（Add/Multiply/Override）。
+3. 应用与移除 GameplayEffect，并维护持续时间。
+4. 通过标签引用计数处理状态门控与系统协作。
+5. 每帧 Tick 清理过期效果并回收临时修饰。
+
+### 11.2 每个头文件（类）预期职责
+
+- GameplayTags.h：通用标签注册表与查询；维护标签名与运行时 ID 映射。
+- AttributeSet.h：属性集容器；维护基础值、修饰器集合与最终值求解。
+- GameplayEffect.h：效果规格与运行时实例；描述修饰器、时长、授予标签。
+- GameplaySystem.h：玩法门面系统；按实体聚合属性/标签/效果并提供 Tick 驱动。
+
+### 11.3 与 Game 层边界约定
+
+1. Runtime/Gameplay 仅提供通用机制，不内置具体“遗物、天赋、塔技能”规则。
+2. Game 层通过配置与脚本定义具体 EffectSpec 并调用 `GameplaySystem` 应用。
+3. 标签命名规范由 Game 层维护，注册与匹配逻辑由 Runtime 层统一实现。
+
+## 12. Runtime/AI/BehaviorTree 头文件职责
+
+### 12.1 模块分层
+
+AI 行为树采用“黑板 + 节点树 + 帧驱动”结构：
+
+1. Blackboard 维护 AI 决策共享数据。
+2. BehaviorTree 持有根节点并负责每帧 Tick 入口。
+3. Composite 节点组织控制流（Sequence/Selector）。
+4. Decorator 节点调整子树语义（Inverter/Repeat）。
+5. Leaf 节点执行条件判断与动作回调。
+
+### 12.2 每个头文件（类）预期职责
+
+- Blackboard.h：黑板键值存储；提供类型安全读写与键管理。
+- BehaviorNode.h：节点层级抽象；定义状态枚举、上下文、组合节点、装饰节点与叶节点接口。
+- BehaviorTree.h：行为树运行入口；负责 root 装配、Tick 调度与重置。
+
+### 12.3 与 ECS/Gameplay 边界约定
+
+1. 行为树通过 `BehaviorContext` 持有实体 ID，不直接持有 World 生命周期。
+2. 叶节点可通过 `userData` 注入 GameplaySystem/Navigation 等外部服务。
+3. Blackboard 仅保存决策数据，不承担资源加载与持久化职责。
