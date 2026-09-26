@@ -92,3 +92,48 @@
 - 物理热路径已无 `std::function`；UI/网络等冷路径保持原样。
 - Release 基准目录 `Build-release` 已保留，供 Phase 11 正式验收复用。
 - 后续每个 Phase 的性能验收可复用本文的"单变量 A/B + candidates/contacts/checksum 确定性门"方法：只切换一个机制，确认行为不变前提下量化收益，不以漏接触或额外穿透换取加速（plan 第 42 条质量门槛）。
+
+## 附录：汇编级内联证据（2026-09-15）
+
+"间接调用不能内联"需要证据而非断言。WSL2 未透传 PMU（`perf` 的 `cycles`/`instructions`/`branch-misses` 全部 `<not supported>`），硬件计数器不可用；但**汇编本身就是最直接的因果证据**——间接调用在机器码里是 `call *寄存器`，无法掩饰，内联后回调体会展开在循环体内。
+
+单变量微基准（Build/inline_proof.cpp，临时文件，Build/ 已被 git 忽略）：跑真实 `BvhTree::SelfQueryPairs` 模板代码，回调复刻 `BroadPhase::ComputePairs` 的 tryEmit（两次 `unordered_map::find` + 过滤 + `push_back`）。唯一变量是回调类型：
+
+- 擦除版：回调包成 `std::function` 传入 → 实例化为 `OnPair = std::function`（等价改前）
+- 内联版：原始 lambda 直接传入（等价改后）
+
+同编译器（MinGW g++ 13.1）同 `-O2`、`-S` 出汇编对比。
+
+### 证据 1：汇编
+
+**擦除版** `SelfQueryPairs<std::function>` 实例化函数体（344 行）中，DFS 循环的 per-pair 分支内存在：
+
+```asm
+.LEHB5:
+        call    *24(%r13)          ; std::function 经 _M_invoker 函数指针的间接调用
+        jmp     .L171
+```
+
+`call *24(%r13)` 每发一对执行一次，无法内联；该函数体调用清单里**没有** `Hashtable::find`，证明回调体（两次 `g_mask.find`）完全没被编进来。
+
+**内联版** `RunQuery<lambda>` 实例化函数体（443 行）：
+
+```
+indirect 'call *reg': 0                              ; 零间接调用
+call _ZNSt10_HashtableI...findERS1_.isra.0  (x2)    ; 回调的两次 hash find 直接内联进查询循环
+```
+
+### 证据 2：动态计时（同负载，pair 数一致）
+
+| 变体 | best-of-5 | 每查询 | pairs |
+|---|---|---|---|
+| 擦除 std::function | 2745 ms | 915.1 µs | 21000 |
+| 内联 lambda | 2629 ms | 876.4 µs | 21000 |
+
+工作量完全相同（pairs 均 21000），纯查询循环差 **4.3%**。
+
+### 对"间接调用都不内联"的限定
+
+该说法基本正确但需限定：`std::function` 的间接调用在**跨越类型擦除边界**时编译器无法去虚拟化（目标在运行时经 `_M_invoker` 函数指针确定）。仅当编译器能在**同一翻译单元看到 `std::function` 的构造点**且能常量传播出 invoker 时才可能去虚拟化——`BvhTree`（模板在头文件、回调类型在调用方）这种跨 TU 场景不会发生。擦除版那处 `call *24(%r13)` 就是未被去虚拟化的实证。
+
+看汇编的具体操作步骤见 [how-to-read-assembly.md](how-to-read-assembly.md)。

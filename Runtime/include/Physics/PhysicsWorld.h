@@ -1,9 +1,11 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cmath>
 #include <memory>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -15,6 +17,7 @@
 #include "ContinuousCollision.h"
 #include "ContactManifold.h"
 #include "Integrator.h"
+#include "PhysicsIsland.h"
 #include "PhysicsMaterial.h"
 #include "PhysicsSettings.h"
 #include "RigidBody.h"
@@ -42,16 +45,25 @@ struct PhysicsStepStats {
 	std::size_t midphaseActivePairCount = 0;
 	std::size_t midphaseNewPairCount = 0;
 	std::size_t midphaseRemovedPairCount = 0;
+	// Phase 7 physics islands (snapshot of the last sub-step's build).
+	std::size_t islandCount = 0;
+	std::size_t islandMaxBodyCount = 0;
 	double integrationMilliseconds = 0.0;
 	double broadPhaseMilliseconds = 0.0;
 	double narrowPhaseMilliseconds = 0.0;
 	double solverMilliseconds = 0.0;
+	double islandBuildMilliseconds = 0.0;
 	double totalMilliseconds = 0.0;
 	// Phase 6 parallel narrow-phase telemetry (per fixed step).
 	std::size_t narrowPhaseJobCount = 0;
 	std::size_t narrowPhaseWorkerCount = 0;
 	double narrowPhaseWorkerBusyMilliseconds = 0.0;
 	double narrowPhaseTailWaitMilliseconds = 0.0;
+	// Phase 8 parallel island solver telemetry (per fixed step).
+	std::size_t islandSolverJobCount = 0;
+	std::size_t islandSolverWorkerCount = 0;
+	double islandSolverWorkerBusyMilliseconds = 0.0;
+	double islandSolverTailWaitMilliseconds = 0.0;
 };
 
 class PhysicsWorld {
@@ -87,6 +99,16 @@ public:
 	uint32_t PhysicsWorkerCount() const;
 	void SetParallelNarrowphaseEnabled(bool enabled);
 	bool ParallelNarrowphaseEnabled() const { return m_settings.parallelNarrowphaseEnabled; }
+	// Phase 8: solve independent islands as job-system tasks. Disabling
+	// forces in-line per-island execution on the calling thread.
+	void SetParallelIslandSolverEnabled(bool enabled);
+	bool ParallelIslandSolverEnabled() const { return m_settings.parallelIslandSolverEnabled; }
+	// Minimum prepared constraints per island solver job; islands at or above
+	// this count become dedicated jobs, smaller islands are batched (mirrors
+	// the narrow-phase chunk size knob).
+	void SetIslandSolverMinConstraintsPerJob(std::size_t count) {
+		m_settings.islandSolverMinConstraintsPerJob = count;
+	}
 	const PhysicsSettings& Settings() const { return m_settings; }
 
 	// A/B switch between the hybrid dual-tree broad-phase (default) and the
@@ -136,6 +158,12 @@ public:
 	uint64_t FixedStepId() const { return m_fixedStepId; }
 	const PhysicsStepStats& LastStepStats() const { return m_lastStepStats; }
 
+	// Phase 7/8: physics islands of the most recent sub-step, stable-sorted
+	// (islands by smallest body id; bodies/contacts ascending inside). Since
+	// Phase 8 they are the solver's work partition for the parallel island
+	// solver.
+	const std::vector<PhysicsIsland>& LastIslands() const { return m_islandBuilder.Islands(); }
+
 	// Read-only access to body/collider containers.
 	const std::unordered_map<uint32_t, RigidBody>& Bodies() const { return m_bodies; }
 	const std::unordered_map<uint32_t, Collider>& Colliders() const { return m_colliders; }
@@ -157,12 +185,23 @@ private:
 	// Upsert touching pairs into the PairKey-keyed fixed-step contact summary.
 	void PublishTouchingContacts(const std::vector<uint32_t>& touchingSlots);
 
-	// Resolve the persistent manifolds of touching pairs through the solver.
-	void PrepareContactConstraints(const std::vector<uint32_t>& touchingSlots, float substepDt);
-	void ResolvePositionContacts(const std::vector<uint32_t>& touchingSlots);
+	// Phase 8: build the sub-step's prepared constraints grouped by island
+	// (contiguous ranges in m_preparedConstraints) and schedule island jobs:
+	// islands ordered by constraint count descending, large islands become
+	// dedicated jobs, small islands are batched to the configured minimum.
+	void PrepareIslandConstraints(const std::vector<uint32_t>& touchingSlots, float substepDt);
+	// Warm start once, run the N velocity iterations and the single position
+	// pass per island; independent islands run as job-system tasks, while
+	// workerCount == 1 or the disabled toggle degrade to in-line execution on
+	// the calling thread.
+	void SolveIslandConstraints();
 	// Store solved lambdas into the persistent caches and accumulate the
 	// fixed-step net impulse totals on the midphase pairs.
 	void CommitSolvedContacts();
+
+	// Phase 7: rebuild physics islands over all dynamic bodies and the
+	// touching pairs of the latest detection query.
+	void BuildIslands(const std::vector<uint32_t>& touchingSlots);
 
 	glm::vec3 m_gravity = glm::vec3(0.0f, -9.81f, 0.0f);
 	float m_fixedTimeStep = 1.0f / 60.0f;
@@ -187,6 +226,36 @@ private:
 	PhysicsStepStats m_lastStepStats;
 	// Substep-temporary prepared constraints, rebuilt every sub-step.
 	std::vector<PreparedContactConstraint> m_preparedConstraints;
+	// Phase 7 island build scratch, rebuilt every sub-step (capacity reused).
+	std::vector<uint32_t> m_dynamicBodyIds;
+	std::vector<IslandContact> m_islandContacts;
+	PhysicsIslandBuilder m_islandBuilder;
+	// Phase 8 island solver scheduling scratch (capacity reused per sub-step).
+	struct IslandConstraintRange {
+		std::size_t begin = 0;
+		std::size_t end = 0;
+	};
+	struct IslandJob {
+		std::size_t scheduleBegin = 0;
+		std::size_t scheduleEnd = 0;
+	};
+	struct IslandJobRecord {
+		std::thread::id threadId;
+		double startMilliseconds = 0.0;
+		double endMilliseconds = 0.0;
+	};
+	std::vector<IslandConstraintRange> m_islandConstraintRanges;
+	std::vector<std::size_t> m_islandSchedule;
+	std::vector<IslandJob> m_islandJobs;
+	std::vector<IslandJobRecord> m_islandJobRecords;
+#ifndef NDEBUG
+	// Acceptance gate runtime assertion: every island task stamps its dynamic
+	// bodies with the current query epoch before solving; a duplicate stamp
+	// means two tasks would write the same dynamic body.
+	std::unordered_map<uint32_t, uint32_t> m_islandBodyIndex;
+	std::unique_ptr<std::atomic<uint32_t>[]> m_islandBodyClaims;
+	std::size_t m_islandBodyClaimCapacity = 0;
+#endif
 
 	CollisionDetector m_collisionDetector;
 	ContinuousCollisionDetector m_continuousCollision;

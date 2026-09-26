@@ -78,10 +78,10 @@ Core 采用以下主循环与基础服务流程：
 
 ### 3.2 每个头文件（类）预期职责
 
-- Engine.h：引擎总入口；负责子系统装配、生命周期管理与对上层启动接口。
-- GameLoop.h：主循环编排器；组织初始化、逐帧更新、渲染驱动与退出流程。
-- Input.h：输入服务接口；统一键鼠/手柄状态采样、查询与帧内事件缓存。
-- Time.h：时间服务接口；提供 deltaTime、固定步长累加器与运行时间统计。
+- Engine.h：引擎总入口；负责 Window/Renderer 装配、生命周期管理与对上层启动接口。
+- GameLoop.h：主循环编排器；组织逐帧可变步长更新、固定步长更新与渲染驱动（退出/关闭流程由 Engine 与 Game 层完成，GameLoop 自身无 shutdown 阶段）。
+- Input.h：输入服务接口；统一键鼠状态采样、查询与帧内事件缓存（由 Window 的 GLFW 回调注入；不支持手柄）。
+- Time.h：时间服务接口；提供 deltaTime、累计运行时间与 FPS 统计。固定步长累加器由 GameLoop 维护，Time 当前未接入 Engine 主循环。
 
 ## 4. Runtime/ECS 头文件职责
 
@@ -98,17 +98,21 @@ ECS 采用以下数据与调度流程：
 
 ### 4.2 每个头文件（类）预期职责
 
-- World.h：ECS 世界门面；聚合 Registry、SystemPool 与事件总线并提供帧级调度入口。
-- Registry.h：注册中心；负责实体与组件关系管理、查询构建与批量结构变更。
-- Entity.h：实体句柄抽象；提供稳定 ID、代际校验与轻量操作接口。
-- EntityPool.h：实体池；负责实体 ID 分配、复用与代际递增策略。
+- World.h：ECS 世界门面；聚合 Registry、SystemManager 与事件总线，Update 按注册顺序驱动系统。
+- Registry.h：注册中心；负责实体与组件关系管理、单组件查询（EntitiesWith<T>）与实体销毁时的组件清理。
+- Entity.h：实体句柄抽象；当前为 uint32_t 数值 ID，句柄本身不携带代际。
+- EntityPool.h：实体池；负责实体 ID 分配、空闲列表复用与池内代际递增（销毁后复用的旧句柄不会失效，句柄级代际校验未实现）。
 - Component.h：组件基抽象与类型标识；定义组件类型元信息与通用访问约定。
-- ComponentPool.h：组件池；按类型连续存储组件数据并提供高效增删改查。
-- System.h：系统基接口；定义系统生命周期（初始化、更新、销毁）与执行阶段约束。
-- SystemPool.h：系统容器；维护系统注册顺序、阶段分组与启停状态。
-- EventBus.h：事件总线；提供发布/订阅机制、事件分发队列与跨系统解耦通信。
+- ComponentPool.h：组件池；类型擦除接口 + 按实体 ID 索引的 vector<optional<T>> 存储（非紧凑连续存储）。
+- System.h：系统基接口；定义 Update(Registry&, float) 更新接口。
+- SystemPool.h：系统容器（SystemManager）；按注册顺序逐个更新系统，当前无阶段分组与启停状态。
+- EventBus.h：事件总线；同步发布/订阅机制（Emit 直接在调用栈执行回调），无事件队列与异步分发。
+
+说明：ECS 当前为头文件内联实现，Runtime/src/ECS 为空目录。
 
 ## 5. Runtime/Graphics 头文件职责
+
+渲染后端为 OpenGL 3.3 Core：GLFW 创建窗口与上下文，GLAD 加载函数指针。当前管线 Execute 仅做 shader 绑定，实际绘制提交与 RenderState 应用集中在 Renderer::Flush。
 
 ### 5.1 模块分层
 
@@ -137,7 +141,7 @@ Graphics 采用以下渲染流水线：
 
 ### 5.3 ShadowMap/CSM 头文件架构（新增）
 
-为支持方向光 ShadowMap 与 Cascaded Shadow Maps（CSM），Graphics 头文件建议增加如下层次：
+为支持方向光 ShadowMap 与 Cascaded Shadow Maps（CSM），Graphics 头文件设计了如下层次。当前实现状态：仅 Light.h 与 ShadowTypes.h 含有实际数据定义；其余 6 个头文件均为接口占位，没有对应 .cpp 实现，Runtime/src/Graphics/Shadows 目录不存在。
 
 - Light.h：光源抽象与基础参数；至少包含方向光方向、颜色、强度、阴影开关。
 - ShadowTypes.h：阴影公共数据结构；定义 `ShadowCascadeSettings`、`ShadowQualitySettings`、`ShadowFrameConstants`。
@@ -150,7 +154,7 @@ Graphics 采用以下渲染流水线：
 
 ### 5.4 ShadowMap/CSM 渲染流水线（新增）
 
-建议采用如下可落地流程：
+以下为设计目标流程，当前未实现（无阴影 FBO、深度 Pass 与阴影采样着色器）：
 
 1. 从主相机提取视锥参数并计算级联切分距离（CSM Split）。
 2. 为每级级联构建 Light View/Projection，并做稳定化（Texel Snapping）。
@@ -172,31 +176,35 @@ Graphics 采用以下渲染流水线：
 
 Physics 采用以下流水线：
 
-1. 采样输入并同步 ECS 变换。
-2. 固定步长积分。
-3. 宽相位筛选潜在碰撞对。
-4. 窄相位生成接触流形。
-5. 约束与冲量解算。
-6. 回写结果到 ECS。
+1. 固定步长累加器驱动子步推进（ECS 输入同步与结果回写尚未接入，PhysicsSystem 仅转发 Step）。
+2. 半隐式欧拉积分。
+3. 宽相位（静态/动态双 BVH）筛选潜在碰撞对。
+4. 中相位维护持久碰撞对与接触流形缓存。
+5. 窄相位 GJK + EPA 生成接触点（支持多线程并行）。
+6. 物理岛构建与冲量求解（独立岛可并行）。
 
 ### 6.2 每个头文件（类）预期职责
 
 - World.h：兼容层/过渡入口，后续逐步收敛到 PhysicsWorld。
 - PhysicsWorld.h：物理世界聚合根；管理刚体、碰撞体、重力、时间步与求解阶段调度。
-- PhysicsSystem.h：ECS 系统入口；负责 PhysicsWorld 与 ECS 的双向同步和帧调度。
+- PhysicsSystem.h：ECS 系统入口；当前仅转发 PhysicsWorld 的固定步进 Step(dt)，PhysicsWorld 与 ECS 的双向同步尚未实现。
 - RigidBody.h：刚体状态与动力学属性；质量、角动量、姿态四元数、惯量张量、力与力矩累积。
 - Collider.h：碰撞体组件；关联实体、形状、物理材质、过滤掩码、触发器标记。
 - CollisionShape.h：几何形状抽象；提供姿态感知 AABB 与支持函数（Support Mapping）。
-- CollisionDetector.h：碰撞检测编排器；组织 BroadPhase 与 NarrowPhase 并产出接触数据。
-- ContinuousCollision.h：连续碰撞检测模块；执行 TOI（Time Of Impact）搜索并驱动子步推进，避免高速穿透。
+- CollisionDetector.h：碰撞检测编排器；组织宽相/中相/窄相流程并产出接触数据，窄相通过共享 JobSystem 多线程并行分块执行。
+- ContinuousCollision.h：连续碰撞检测模块；基于扫掠 AABB 的时间采样 + 二分细化近似 TOI，并驱动子步推进以避免高速穿透（非严格解析 TOI，且在调用线程逐对执行）。
 - ContactManifold.h：接触流形数据结构；保存接触点、法线、穿透深度、累计冲量。
 - ContactSolver.h：接触求解模块；统一处理法向冲量、摩擦冲量、位置修正与 one-sided 接触策略。EPA 输出法线方向为 A→B，`EnsureClosingVelocity` 先用接触点速度判定接近，若接触点因旋转出现假分离则回退到质心线速度判定；对球体接触会约束冲量力臂为球半径，避免远离几何表面的接触点导致扭矩异常放大。
-- PhysicsMaterial.h：接触材质参数；静摩擦、动摩擦、恢复系数、组合规则。
-- Constraint.h：约束抽象；用于关节、距离、弹簧、关节限位等统一解算接口。
-- Raycast.h：空间查询接口；支持射线、形状 sweep、重叠检测与过滤。
+- PhysicsMaterial.h：接触材质参数；静摩擦、动摩擦、恢复系数、组合规则（当前求解器仅使用 dynamicFriction，静摩擦未参与求解）。
+- Constraint.h：约束抽象；当前仅有 Solve(float) 纯虚接口，关节、距离、弹簧、限位等具体约束类型尚未实现。
+- Raycast.h：空间查询接口；当前仅实现基于 AABB slab 的射线检测（命中法线为 AABB 近似），形状 sweep 与重叠检测未实现。
 - Integrator.h：积分器接口；封装半隐式欧拉等积分策略。
-- BroadPhase.h：宽相位接口；当前实现为动态 BVH（fat AABB + 增量插入/删除 + 移动重插入）生成潜在碰撞对；后续演进为静态八叉树（或网格）+ 动态 BVH 的混合宽相位。
-- NarrowPhase.h：窄相位接口；当前实现为 GJK + EPA 生成接触法线与穿透深度。
+- BroadPhase.h：宽相位接口；当前实现为静态/动态双 BVH 树（fat AABB + 增量插入/删除 + refit 与移动重插入）生成潜在碰撞对。
+- NarrowPhase.h：窄相位接口；当前实现为 GJK + EPA 生成接触法线、穿透深度与最多 4 点接触流形。
+- BvhTree.h：动态 BVH 树实现；fat AABB、原地 refit、超出包围盒后 remove/reinsert。
+- Midphase.h：中相持久对管理；PairKey/代际句柄槽位、持久接触流形、局部锚点匹配与累积冲量缓存，发布 Enter/Stay/Exit 接触事件。
+- PhysicsIsland.h：物理岛构建与求解调度；独立岛支持并行求解，触发器不进入岛。
+- PhysicsSettings.h：物理配置；并行窄相与并行岛求解的 worker 配置与开关。
 
 ## 7. Runtime/Platform 头文件职责
 
@@ -212,8 +220,8 @@ Platform 采用以下平台抽象流程：
 
 ### 7.2 每个头文件（类）预期职责
 
-- Window.h：窗口抽象；负责窗口创建销毁、事件轮询、交换链呈现与尺寸管理。
-- PlatformUtils.h：平台工具集合；封装路径、环境、时钟、系统能力查询等跨平台辅助能力。
+- Window.h：窗口抽象；负责窗口创建销毁、事件轮询、交换链呈现与尺寸管理（基于 GLFW + OpenGL 3.3 Core 上下文）。
+- PlatformUtils.h：平台工具集合；当前为占位实现（仅空的 EnableVSync），路径、环境、时钟、系统能力查询等能力尚未实现。
 
 ## 8. Runtime/Resource 头文件职责
 
@@ -229,34 +237,34 @@ Resource 采用以下生命周期：
 
 ### 8.2 每个头文件（类）预期职责
 
-- FileSystem.h：文件系统抽象；统一虚拟路径、包体、平台文件 IO。
-- ResourceManager.h：资源门面；对上层提供 load/get/release 接口。
+- FileSystem.h：文件系统抽象；挂载点管理、虚拟路径映射与文本/二进制读写（基于 std::filesystem，无包体系统）。
+- ResourceManager.h：资源门面；对上层提供 load/get/release 接口，实现同步/异步加载流水线（IO → Decode → Upload）与缓存淘汰（基于 shared_ptr 引用计数判断，无独立的每资源状态机/显式引用计数）。
 - Handle.h：通用资源句柄（`Runtime::Handle`）；位于 `Runtime/include/Common/`，各子模块通过别名表达持有资源类型：Graphics 用 `MeshHandle`/`TextureHandle`，Resource 用 `AssetHandle`。
 - AssetMetadata.h：资产元信息；资源类型、路径、依赖、导入配置、版本。
-- Resource.h：资源基类；统一状态机、引用计数、内存占用信息。
+- Resource.h：资源基类；统一状态枚举、内存占用信息。
 - ResourceCache.h：资源缓存容器；命中查询、淘汰策略、容量控制。
-- ResourceLoader.h：加载器基接口；定义同步/异步加载与错误返回协议。
-- AssetDatabase.h：资产数据库；维护 GUID 到元数据映射和反向索引。
-- ImportPipeline.h：导入流水线；负责源资产到运行时格式的转换与产物管理。
-- TextureLoader.h：纹理加载器；支持贴图格式解析、mipmap、颜色空间约定。
-- MeshLoader.h：网格加载器；解析顶点布局、子网格、骨骼/切线数据。
-- MaterialLoader.h：材质加载器；解析材质参数并绑定纹理/着色器资源。
-- ShaderLoader.h：着色器加载器；管理编译、缓存、变体 key 与反射数据。
-- HotReloadWatcher.h：热更新监视器；监听文件变化并触发增量重载与依赖传播。
+- ResourceLoader.h：加载器基接口；定义 Read/Decode/Upload 加载协议。
+- AssetDatabase.h：资产数据库；维护 GUID 到元数据映射和虚拟路径反向索引。
+- ImportPipeline.h：导入流水线；当前仅生成 GUID 与构造元数据，源资产解析、格式转换与产物管理未实现。
+- TextureLoader.h：纹理加载器；当前仅将文件包装为原始二进制资源，mipmap、颜色空间等解析未实现。
+- MeshLoader.h：网格加载器；当前仅包装原始二进制数据，顶点布局、子网格、切线解析未实现。
+- MaterialLoader.h：材质加载器；当前仅读取文本资源，材质参数解析与依赖绑定未实现。
+- ShaderLoader.h：着色器加载器；当前仅读取文本资源，变体 key 与反射数据未实现。
+- HotReloadWatcher.h：热更新监视器；当前仅基于修改时间轮询检测文件变化，增量重载与依赖传播未接入。
 
 ## 9. Runtime/Network 头文件职责
 
 ### 9.1 模块分层
 
-Network 采用客户端-服务器架构，支持 TCP（可靠消息）与 UDP（实时状态），与 ECS 松耦合（独立线程，通过 EventBus 通信）。流水线如下：
+Network 采用客户端-服务器架构，与 ECS 松耦合（独立线程，通过事件队列桥接）。流水线如下（其中第 3/5/6 步为规划能力，当前为接口占位，见 9.3）：
 
-1. 创建 Socket 并建立/监听连接。
-2. 维护会话，处理身份认证与心跳。
-3. 接收原始数据并通过 Channel 保证交付语义。
+1. 创建 Socket 并建立/监听连接（TCP 已实现，UDP socket 已封装）。
+2. 维护会话，处理心跳与超时检测。
+3. 接收原始数据并通过 Channel 保证交付语义（未实现）。
 4. 反序列化消息并按类型分发到处理器。
-5. 服务器广播权威状态快照。
-6. 客户端预测输入并在收到服务器快照后回滚修正。
-7. 通过 EventBus 将网络事件投递到 ECS。
+5. 服务器广播权威状态快照（未实现）。
+6. 客户端预测输入并在收到服务器快照后回滚修正（未实现）。
+7. 通过事件队列将网络事件投递到上层。
 
 ### 9.2 每个头文件（类）预期职责
 
@@ -292,16 +300,16 @@ Network 采用客户端-服务器架构，支持 TCP（可靠消息）与 UDP（
 
 ### 10.1 模块分层
 
-UI 采用 ImGui 调试叠加层与自有保留模式 Widget 树双层架构，支持 Screen Space 与 World Space 渲染，使用锚点/绝对定位布局，复用 ECS EventBus 处理事件，支持简单单向数据绑定。流水线如下：
+UI 规划采用 ImGui 调试叠加层与自有保留模式 Widget 树双层架构，使用锚点布局与单向数据绑定。当前实现状态见 10.4；规划流水线如下：
 
 1. 构建或更新 Widget 树与 Canvas 层级。
-2. 执行锚点布局计算，确定控件位置与尺寸。
+2. 执行锚点布局计算，确定控件位置与尺寸（对齐未实现）。
 3. 处理输入事件，沿 Widget 树命中测试并分发。
-4. 将 UI 事件桥接到 ECS EventBus。
-5. 触发单向数据绑定更新。
+4. 将 UI 事件桥接到 ECS EventBus（未接入）。
+5. 触发单向数据绑定更新（控件自动绑定未实现）。
 6. 收集可见控件并提交到 UIRenderer 批量绘制。
-7. UIRenderer 按 Screen Space / World Space 分别渲染。
-8. ImGui DebugUI 叠加层独立渲染调试信息。
+7. UIRenderer 按 Screen Space / World Space 分别渲染（未实现，仅按 layer 排序）。
+8. ImGui DebugUI 叠加层独立渲染调试信息（未接入 ImGui）。
 
 ### 10.2 每个头文件（类）预期职责
 
@@ -332,6 +340,15 @@ UI 采用 ImGui 调试叠加层与自有保留模式 Widget 树双层架构，�
 - Widgets/DropDown.h：下拉菜单控件；点击展开选项列表，支持搜索过滤与选中回调。
 - Widgets/Dialog.h：对话框控件；模态/非模态弹窗，支持标题、内容区与按钮组。
 
+### 10.4 当前实现状态
+
+1. UI 模块当前为头文件内联实现原型，Runtime/src/UI 下所有 .cpp 均为仅含 include 的空编译单元。
+2. DebugUI 目前只是文本行缓存，尚未接入 ImGui 上下文与绘制；UIManager 仅写入两行统计文本。
+3. UI 事件类型已定义，但尚未实际投递到 ECS EventBus（UIManager 仅保存指针）。
+4. 样式系统仅有全局/类型样式表结构，运行时主题切换未实现，控件样式当前硬编码。
+5. 布局支持锚点与边距，对齐（alignment）未实现；World Space Canvas 仅为数据标记，渲染后端未按空间分别处理。
+6. 控件多为基础交互实现：ScrollView 与 Dialog 为最小骨架；ListView 无滚动/项模板；TreeView 命中仅处理根节点；DropDown 无搜索且展开项交互不完整；InputField 无光标/选中/删除编辑。
+
 ## 11. Runtime/Gameplay 头文件职责
 
 ### 11.1 模块分层
@@ -346,7 +363,7 @@ Gameplay 作为通用玩法运行时框架，采用以下流程：
 
 ### 11.2 每个头文件（类）预期职责
 
-- GameplayTags.h：通用标签注册表与查询；维护标签名与运行时 ID 映射。
+- GameplayTags.h：通用标签注册表与查询；维护标签名与运行时 ID 双向映射（引用计数门控位于 GameplaySystem 的实体级状态，不在注册表内）。
 - AttributeSet.h：属性集容器；维护基础值、修饰器集合与最终值求解。
 - GameplayEffect.h：效果规格与运行时实例；描述修饰器、时长、授予标签。
 - GameplaySystem.h：玩法门面系统；按实体聚合属性/标签/效果并提供 Tick 驱动。

@@ -13,8 +13,10 @@
 - 已知限制（Phase 4 验收门第 21 条）：低迭代堆叠场景（`LowIterationStackStaysWithinQualityBounds`）在 4 次迭代下最终坍塌。根因是多点流形 + warm start + 顺序冲量的架构限制：零角臂质心点（Phase 2/3 保留的代表性接触点）在 Gauss-Seidel 中作为负载汇点维持短期稳定，但微小倾斜累积后求解器无法在点间重新分配负载，倾斜被放大直至坍塌。旧实现（Phase 3）通过允许 0.171 穿透和未收敛速度维持表观稳定；新实现穿透 0.011、速度收敛，但位置漂移。块求解器或稳定 feature ID（plan 后续增强）是根本修复方向。详见 `Docs/phase4-investigation.md`。
 - 已完成（2026-09-11）：Phase 5 固定 JobSystem。`Runtime/include/Core/JobSystem.h` 与 `Runtime/src/Core/JobSystem.cpp` 落地：固定 `std::jthread` worker 池（workerCount 含调用线程，1 为纯串行回退）、条件变量批量派发（每 chunk 一张 ticket，共享同一份 Job 快照，杜绝跨代别名）、帧级 barrier（`ParallelForRange` 返回即完成）、主线程参与、空任务/重复初始化/安全关闭；chunk 异常被捕获计数、barrier 不挂起并在调用线程重抛首个异常；小任务（单 chunk 或串行配置）退化为调用线程直接执行；无任何每帧 `std::async`。验收测试 `Tests/Common/JobSystem_Test.cpp` 9 个用例通过（每索引恰执行一次、1/2/4/硬件并发结果一致、串行/小任务调用线程内联、关闭无死锁、minItemsPerJob 生效、异常后池仍可用），完整 ctest 99/99 通过（1 个 Phase 4 已知禁用）。
 - 已完成（2026-09-12）：Phase 6 并行 Narrowphase。`CollisionDetector` Stage 3 拆分为 `ExecuteNarrowphase`：Midphase 连续 work list 按 `PhysicsSettings::narrowphaseMinPairsPerJob`（初始 32）分块经 `JobSystem::ParallelForRange` 派发，主线程参与；worker 只读冻结 Collider/RigidBody/Shape 快照，只写自己的 Pair 输出槽（预分配 `WorkOutput` 数组）与任务私有统计，不改 BVH/map/body、不共享 push_back、不分发事件；chunk 遥测记录槽按 实际chunk数+workerCount 预留（JobSystem 每个参与线程耗尽任务前会多认领一次越界 chunk）；barrier 后主线程按稳定 PairKey 序提交、匹配流形并压缩有效接触。`NarrowPhase::GenerateContact` 统计改为按调用输出参数（删除共享 mutable 成员，这是同实例并发的前提），CCD 栈上局部实例同步适配。**有意行为修正**：旧 `LastQueryStats()` 跨调用差值失败检测有污染 bug——上次失败会使本次正常结果被误判为 QueryFailure、连续失败被漏判冒充正常分离（违反冻结契约）；修正为当次独立判定后 boxfield 轨迹变化（contacts 34883→34235，epaFailures 877→960 恢复真实计数），hull500 全程零失败轨迹位级不变。修复并行 chunk 遥测记录槽越界导致的随机挂起。提供 `SetParallelNarrowphaseEnabled` 与 `SetPhysicsWorkerCount`（workerCount=1 为确定性回退）；`PhysicsSettings.h` 补齐（此前缺失）。验收测试 `Physics_ParallelNarrowphaseTest.cpp` 4 个用例通过（1/N worker 与开关双态位级一致、统计归并等于串行、遥测分块正确），完整 ctest 103/103 通过（1 个 Phase 4 已知禁用）。TSan 在本平台（Windows+MinGW GCC）不可用，以结构保证与确定性测试替代。Release hull500 16 worker narrowPhase P95 2.27→0.52 ms（-77%）、total 3.62→1.79 ms（-51%），远超重复运行波动；Benchmark 新增 `--workers`/`--serial-narrowphase` 与并行遥测输出。详见 `Docs/phase6-parallel-narrowphase.md`。
-- 未开始：Phase 7 及后续 Island、并行 Island Solver、睡眠和 CCD 新流水线。
-- 已记录验证：完整 ctest 79/79 通过（含 Physics 57 个）；相同 seed/body/frame 的两次 boxfield 基准运行中，碰撞计数和最终位置 checksum 一致。
+- 已完成（2026-09-21）：Phase 7 链式前向星与 Physics Island。`PhysicsIsland.h/.cpp` 落地 `PhysicsIslandBuilder`：为参与求解的动态 body 建紧凑节点索引（body id→node），head + `IslandEdge` 连续数组链式前向星；动态-动态非 Trigger 接触写双向边，动态-静态接触归入动态 body 所在岛但静态体不作为传播节点，静态-静态接触不携带岛信息直接跳过；迭代 DFS 提取岛，岛按最小 body id 稳定排序、岛内部 bodies/contacts 升序，`IslandBuildStats` 报告 islandCount/maxIslandBodyCount；builder 复用帧容量（岛数组按索引覆写、跨帧保留 vector 容量），重复构建同输入输出位级一致。`PhysicsWorld::BuildIslands` 每 substep 在求解提交后由 touching 流形构建岛（只读，不改物理状态），`PhysicsStepStats` 新增 `islandCount/islandMaxBodyCount/islandBuildMilliseconds`，`LastIslands()` 暴露最近 substep 快照。Benchmark islands 指标与 islandBuild 分位数接入：boxfield 稳态 86 岛、最大岛 3 body。验收测试 `Physics_PhysicsIslandTest.cpp` 9 个用例通过（链式合并、共享静态地面岛独立、Trigger 不成边、无接触单体岛、稳定排序、容量复用一致、World 集成统计），完整 ctest 112/112 通过（1 个 Phase 4 已知禁用）；boxfield warmup30 轨迹与 Phase 6 基线逐计数一致（contacts 34235、epaFailures 960），同种子双跑 checksum 位级一致。
+- 已完成（2026-09-23）：Phase 8 并行 Island Solver。求解输入切换为 Island：`PrepareIslandConstraints` 按岛构建器稳定岛序把 prepared 约束连续排入 `m_preparedConstraints`（岛内保持工作列表 PairKey 升序，Gauss-Seidel 序列与扁平串行逐约束一致）；岛按约束数从大到小稳定排序，`PhysicsSettings::islandSolverMinConstraintsPerJob`（初值 32）以上大岛独立任务、小岛贪心装箱，经 `JobSystem::ParallelForRange` 派发，主线程参与；岛粒度内仍是完整串行 WarmStart→N 次速度迭代→单次位置修正（不做岛内约束着色）；barrier 后主线程按稳定存储序 `CommitSolvedContacts`；`SetParallelIslandSolverEnabled` 与 workerCount=1 为确定性回退，调度结构不变。无数据竞争由结构保证：岛间动态 body 互斥（构建器不变量），共享静态体在求解期纯读取（冲量入口静态保护、位置修正跳过静态端），Debug 构建下每个岛任务以 queryEpoch 票记对本岛动态 body 做原子戳记断言（验收门运行时检查）。`PhysicsStepStats` 新增 islandSolverJobCount/islandSolverWorkerCount/workerBusy/tailWait（口径同窄相：墙钟在 solverMilliseconds，CPU 加和另列）；Benchmark 新增 `--serial-islands`、`config.parallelIslandSolver` 与 `futureMetrics.parallelIslandSolver`。验收测试 `Physics_ParallelIslandSolverTest.cpp` 4 个用例通过（1/N worker 位级一致、开关双态位级一致、共享静态地面双堆叠跨 worker 位级一致、遥测分块与串行回退），完整 ctest 116/116 通过（1 个 Phase 4 已知禁用）；Debug boxfield 三跑（1/8 worker/关岛并行）与 Phase 7 基线逐计数+checksum 位级一致（contacts 34235、epaFailures 960）。Release：stack5×64 独立岛 solver P95 0.410→0.226 ms（-45%）、total -60%；hull500 solver -55%、total -64%；均超过重复运行波动。详见 `Docs/phase8-parallel-island-solver.md`。
+- 未开始：Phase 9 及后续睡眠/唤醒与 CCD 新流水线。
+- 已记录验证：完整 ctest 116/116 通过（1 个 Phase 4 已知禁用）；相同 seed/body/frame 的两次 boxfield 基准运行中，碰撞计数和最终位置 checksum 一致。
 
 **已落地修改**
 
@@ -33,6 +35,8 @@
 - Phase 4（2026-09-08）：`ContactSolver` 重构为 Prepare/WarmStart/SolveVelocityIteration/ResolvePosition/CommitSolvedImpulses 流水线；`ContactManifold` 新增固定步总冲量汇总字段；`PhysicsWorld` 接线子步流水线并删除 legacy 检测开关；`Tests/Physics/Physics_ContactSolverTest.cpp` 覆盖 Phase 4 验收门。
 - Phase 5（2026-09-11）：`Runtime/Core/JobSystem.h/.cpp` 固定线程池、批量派发与帧级 barrier；BvhTree 查询回调模板化、`RangeFunction` 非持有 function-ref（热路径去类型擦除）；`Tests/Common/JobSystem_Test.cpp`；方法与数据见 `Docs/defunction-callback-optimization.md`。
 - Phase 6（2026-09-12）：`CollisionDetector::ExecuteNarrowphase` 并行分块 + 私有输出槽 + 主线程稳定顺序提交；`NarrowPhase` 按调用输出统计（删除共享 mutable 成员，修正跨调用失败检测污染）；`PhysicsSettings.h` worker/分块参数；`PhysicsWorld` 并行开关与 worker 数；`Tests/Physics/Physics_ParallelNarrowphaseTest.cpp`；Benchmark `--workers`/`--serial-narrowphase` 与并行遥测；详见 `Docs/phase6-parallel-narrowphase.md`。
+- Phase 7（2026-09-21）：`PhysicsIsland.h/.cpp` 链式前向星岛构建器（紧凑动态索引、双向动态边、静态不成节点、稳定排序、帧容量复用）；`PhysicsWorld::BuildIslands` 每 substep 只读接线与 `PhysicsStepStats` 岛统计；Benchmark islands 指标与 islandBuild 分位数；`Tests/Physics/Physics_PhysicsIslandTest.cpp`。
+- Phase 8（2026-09-23）：`PhysicsWorld` 求解输入切换为 Island——`PrepareIslandConstraints`（按岛分组连续 prepared 约束）+ `SolveIslandConstraints`（大岛独立任务/小岛装箱、并行派发或串行内联、岛粒度完整 WarmStart/速度迭代/位置修正）+ 主线程稳定序提交；`PhysicsSettings.h` 新增 `parallelIslandSolverEnabled` 与 `islandSolverMinConstraintsPerJob`；`PhysicsStepStats` 岛求解器遥测；Benchmark `--serial-islands` 与 `futureMetrics.parallelIslandSolver`；`Tests/Physics/Physics_ParallelIslandSolverTest.cpp`；详见 `Docs/phase8-parallel-island-solver.md`。
 
 **近期补丁清单（进入双 BVH 前）**
 
@@ -42,7 +46,7 @@
 4. **已完成（2026-09-08）。** `SolveContactsIterative()` 已更名为 `DetectAndSolveContacts(substepDt, isToiSubstep)`，随 Phase 2 的 PhysicsWorld 接线一起完成。
 5. **已完成（2026-09-07）。** 基准程序新增 `--scenario` 枚举：`boxfield`（原固定种子 box workload，行为与 RNG 顺序不变）、`stack3`/`stack5`（3/5 箱堆叠）、`hull`（100/500/1000 凸包，经 `--bodies` 参数化，32 顶点固定种子凸包）、`trigger`、`churn`（每帧 5% 创建销毁）、`ccd`（250 m/s 高速球持续冲击，零弹性地面 + 沉降重发保证每帧 CCD 活跃）、`all`（一次输出全场景基线）。新增 `--warmup` 预热帧参数。JSON 升级 schemaVersion 2，增加 version 块（项目版本、编译器、构建类型、git commit/dirty、UTC 时间戳）。已生成 `Build/physics_benchmark_baseline.json`（全场景）与 `Build/physics_benchmark_hull500.json`；boxfield 同种子双跑 checksum 位级一致。注意：该基线产自 Debug 构建，正式性能验收按计划使用 Release。
 6. **已完成（2026-09-07）。** `staticBvhLeafCount/dynamicBvhLeafCount` 现在在查询同步后读取两棵实际 BVH 的叶数（`HybridBvhBroadPhase::GetLeafCounts()`）；legacy 单树路径无分类树，回退为逻辑分类基线。顺带修复了在 `ComputePairs` 之前采样导致首帧统计恒为 0 的问题。
-7. **已完成（2026-09-08）。** Midphase 指标已接入 Benchmark：steady-state `activePairs/newPairs/removedPairs` 真实数据替换 `available: false`；boxfield 稳态 240 帧 newPairs=0、removedPairs=0。Island/Sleep 仍为占位。
+7. **已完成（2026-09-08）。** Midphase 指标已接入 Benchmark：steady-state `activePairs/newPairs/removedPairs` 真实数据替换 `available: false`；boxfield 稳态 240 帧 newPairs=0、removedPairs=0。Island 指标已随 Phase 7 接入（2026-09-21），Sleep 仍为占位。
 8. **已完成（2026-09-08）。** `normalImpulse` 已升级为最近有效接触子步内实际施加的累计冲量，Trigger 所有冲量字段恒零并有回归，GameApp 遥测已按字段口径加注释。切向冲量累计（双切线基投影）与固定步总冲量汇总字段已随 Phase 4 落地：`ContactManifold` 新增 `fixedStepNormalImpulse`/`fixedStepTangentImpulse`，由 `PhysicsWorld` 在发布时按子步最终累计 lambda 合计（WarmStart 与后续 delta 的合计），Trigger 恒零。
 9. **已完成（2026-09-07）。** 跨阶段契约已冻结（见下文）。已为 CCD 外力跨子步清理问题增加聚焦回归 `CcdSubStepsConsumeForceAcrossFullFixedStep` 并完成修复：旧行为下外力仅在首个 TOI 子步按子步 dt 消费后被清空（回归实测 vx≈11.7 而非 50），修复后各子步按自身 dt 积分同一份锁定外力、固定步末统一清理。修复后完整 Physics 测试 22/22 通过。
 
@@ -73,7 +77,7 @@
 **Steps**
 
 ### Phase 0：基线、契约与流水线纠正
-1. **部分完成。** Agent 0 已建立固定 seed/dt/body/frame 的 box workload、统计结构、JSON P50/P95/P99、checksum 和重复运行确定性检查；已统计逻辑 Static/Dynamic 叶分类、candidate/manifold/contact、GJK/EPA 调用与失败和已有阶段耗时。2026-09-07 补丁 5 已补齐场景矩阵（stack3/stack5、hull 100/500、trigger、churn、ccd）与带版本信息的基线 JSON；hull 1000 与 Release 正式基线、质量阈值登记留待 Phase 11。Island/awake/sleeping 指标等待对应模块。
+1. **部分完成。** Agent 0 已建立固定 seed/dt/body/frame 的 box workload、统计结构、JSON P50/P95/P99、checksum 和重复运行确定性检查；已统计逻辑 Static/Dynamic 叶分类、candidate/manifold/contact、GJK/EPA 调用与失败和已有阶段耗时。2026-09-07 补丁 5 已补齐场景矩阵（stack3/stack5、hull 100/500、trigger、churn、ccd）与带版本信息的基线 JSON；hull 1000 与 Release 正式基线、质量阈值登记留待 Phase 11。Island 指标已随 Phase 7 接入；awake/sleeping 指标等待 Phase 9。
 2. **已完成。** Agent 1 已重构 PhysicsWorld：每个普通 substep 只执行一次 Detect，之后对同一批约束执行 N 次速度求解，substep 末执行一次位置修正；CCD 每个实际 TOI substep检测一次；已增加检测调用计数、legacy A/B 开关和测试。
 3. **部分完成。** 现有 Broadphase 已按 body ID 规范化 pair，Body ID 当前不复用；先冻结上述跨阶段契约并补 CCD 外力/力矩生命周期回归。累计 normal/tangent impulse、Trigger Pair 生命周期和 GameApp 遥测由 Midphase/Warm Start 阶段实现，不提前改变字段含义。
 
@@ -115,14 +119,14 @@
 27. **已完成（2026-09-12）。** 验收门：1 worker 与 N worker 的 Pair、contact point、法线、事件与最终状态位级一致；本平台无 TSan（已记录），以结构保证与确定性测试替代；统计每线程 job 数、耗时和尾部等待并随 Benchmark 输出；500 凸包相对单线程 narrowPhase -77%、total -51%，超过重复运行波动。详见 `Docs/phase6-parallel-narrowphase.md`。
 
 ### Phase 7：链式前向星与 Physics Island
-28. Agent 10 新增 PhysicsIslandBuilder：首版仅为当前实际支持并参与求解的动态 body 建立紧凑索引，使用 head + IslandEdge 连续数组构建链式前向星。动态-动态非 Trigger 接触写双向边；动态-静态约束归入动态 body，但静态体不作为传播节点。不在本阶段引入运动学 body；未来接入时另定只读边界及唤醒传播规则。
-29. 使用迭代 BFS/DFS 提取稳定排序的 PhysicsIsland，收集 body/contact 索引并复用帧容量；joint constraint 待真实关节系统接入再扩展。初版可用 vector，稳定后才改 offset/count 帧分配器。睡眠岛保留成员关系和必要接触邻接，不能因从本步 solver 列表移除就丢失整岛唤醒信息。
-30. 验收门：每个动态 body 最多属于一个 Island；多个 body 共享静态地面仍为独立 Island；Trigger 不成边；无接触的 awake dynamic body 可形成单体 Island；复杂度与内存增长符合 O(V+E)。
+28. **已完成（2026-09-21）。** Agent 10 新增 PhysicsIslandBuilder（`PhysicsIsland.h/.cpp`）：仅为当前实际参与求解的动态 body 建立紧凑索引，head + `IslandEdge` 连续数组链式前向星。动态-动态非 Trigger 接触写双向边；动态-静态约束归入动态 body，静态体不作为传播节点。未引入运动学 body。
+29. **已完成（2026-09-21）。** 迭代 DFS 提取稳定排序的 PhysicsIsland（岛按最小 body id、岛内部 bodies/contacts 升序），复用帧容量；初版使用 vector，offset/count 帧分配器留待稳定后。睡眠岛成员保留规则待 Phase 9 引入睡眠状态后接线（当前所有动态 body 均参与建岛）。
+30. **已完成（2026-09-21）。** 验收门通过（`Physics_PhysicsIslandTest.cpp`，9 个用例）：每个动态 body 最多属于一个 Island；多个 body 共享静态地面仍为独立 Island；Trigger 不成边；无接触的动态 body 形成单体 Island；重复构建容量复用输出一致；World 集成后统计快照正确（boxfield 稳态 86 岛、最大 3 body）。复杂度 O(V+E)，接触按边一次性写链、body 按 DFS 各访问一次。
 
 ### Phase 8：并行 Island Solver
-31. Agent 11 将 Prepare/WarmStart/SolveVelocity/SolvePosition 输入切换为 Island。Island 内保持串行 Sequential Impulse；不同 Island 任务独占动态 body。按约束数量从大到小排序，大 Island 单独任务，小 Island 批量装箱降低尾部等待。
-32. 稳定性顺序不得由任务完成顺序决定；事件与 Contacts 在 barrier 后由主线程按稳定键发布。暂不做同一 Island 内约束图着色。
-33. 验收门：运行时断言不同任务不写同一动态 body；1 worker 与 N worker 接触集合相同、最终状态在容差内；多个独立堆叠随 worker 数扩展；单个巨大 Island 不承诺线性加速。
+31. **已完成（2026-09-23）。** Agent 11 将 Prepare/WarmStart/SolveVelocity/SolvePosition 输入切换为 Island。Island 内保持串行 Sequential Impulse；不同 Island 任务独占动态 body。按约束数量从大到小排序，大 Island 单独任务，小 Island 批量装箱降低尾部等待（`islandSolverMinConstraintsPerJob`，初值 32）。
+32. **已完成（2026-09-23）。** 稳定顺序不由任务完成顺序决定：岛内约束序与岛提交序均在主线程调度时固定，事件与 Contacts 在 barrier 后由主线程按稳定键发布。未做同一 Island 内约束图着色。
+33. **已完成（2026-09-23）。** 验收门通过（`Physics_ParallelIslandSolverTest.cpp`）：Debug 构建运行时断言不同任务不写同一动态 body（queryEpoch 票记戳记，全程未触发）；1 worker 与 N worker 接触集合与最终状态位级一致（强于容差要求）；Release stack5 场景 64 个独立堆叠随 worker 数扩展（total P95 -60%@w8，超重复运行波动）；单个巨大 Island 不承诺线性加速（未包含在测试矩阵）。
 
 ### Phase 9：Island 睡眠与唤醒
 34. Agent 12 为 RigidBody 增加 Awake/Candidate/Sleeping、sleepTimer、allowSleep、transformVersion、externalActivity 标记。按已冻结失效矩阵接入外部 wake request；内部积分、WarmStart、Solver 冲量/位置修正及正常重力不标记为外部活动。静态体本身无需唤醒，但移走、销毁或修改静态支撑必须通知其旧接触邻接岛。
@@ -182,5 +186,5 @@
 **Agent ownership / merge order**
 - Agent 0：基准统计与测试；Agent 1：PhysicsWorld 初始流水线；Agent 2：BroadPhase；Agent 3：Midphase/ContactManifold；Agent 4：CollisionDetector/Narrowphase 接线；Agent 5：RigidBody；Agent 6：ContactSolver；Agent 7：PhysicsWorld 最终集成；Agent 8：JobSystem；Agent 9：并行 Narrowphase；Agent 10：PhysicsIsland；Agent 11：并行 Solver；Agent 12：睡眠；Agent 13：CCD；Agent 14：最终验收。
 - Agent 1 已完成初始 PhysicsWorld 流水线；Agent 0 保留场景矩阵、质量阈值和正式基线产物的补充任务。Agent 2（双 BVH）与 Agent 3/4（Midphase、ContactManifold、CollisionDetector 接线及 Phase 2 范围内的 PhysicsWorld 失效接线）已完成；补丁 3/4 已随 Phase 2 落地，补丁 8 的切向累计与固定步总冲量字段留 Phase 4。Agent 5（角响应）已完成，`ApplySolverAngularImpulse` 响应接口已冻结；下一批可并行启动 Agent 6（Prepare/Warm Start/累计冲量）与 Agent 8（JobSystem）。
-- Agent 3 在 PairKey/查询接口冻结后可开发 Pair 池，实际 Broadphase 集成等待 Agent 2；Midphase/ContactManifold 契约及 Agent 5 的响应接口冻结后 Agent 4、Agent 6 可并行。随后 Agent 7 串行集成，在接触汇总与短暂事件回归通过后删除 MergeStepContacts 临时实现；Agent 8（JobSystem）与 Agent 9（并行 Narrowphase）已完成；Agent 10（Physics Island）可启动；Agent 11 依赖 Agent 9/10；Agent 12 后 Agent 13（本轮仅全局 TOI 接线）；最后 Agent 14。Island-local CCD 另立计划。
+- Agent 3 在 PairKey/查询接口冻结后可开发 Pair 池，实际 Broadphase 集成等待 Agent 2；Midphase/ContactManifold 契约及 Agent 5 的响应接口冻结后 Agent 4、Agent 6 可并行。随后 Agent 7 串行集成，在接触汇总与短暂事件回归通过后删除 MergeStepContacts 临时实现；Agent 8（JobSystem）与 Agent 9（并行 Narrowphase）已完成；Agent 10（Physics Island）已完成；Agent 11（并行 Island Solver）已完成；Agent 12（睡眠）可启动；随后 Agent 13（本轮仅全局 TOI 接线）；最后 Agent 14。Island-local CCD 另立计划。
 - 高冲突文件必须单一所有者：ContactManifold.h 归 Agent 3，RigidBody.* 归 Agent 5，ContactSolver.* 归 Agent 6，PhysicsWorld.* 在初期归 Agent 1、最终集成归 Agent 7；后续 Agent 只通过冻结接口接入，避免并发修改。

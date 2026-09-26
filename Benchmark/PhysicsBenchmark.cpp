@@ -29,8 +29,10 @@ struct Options {
     std::string output = "physics_benchmark.json";
     // Phase 6: physics worker count (0 = hardware concurrency, 1 = fully
     // serial deterministic fallback) and the parallel narrow-phase toggle.
+    // Phase 8 adds the parallel island solver toggle.
     uint32_t workers = 0;
     bool serialNarrowphase = false;
+    bool serialIslands = false;
 };
 
 Options ParseOptions(int argc, char** argv) {
@@ -39,6 +41,10 @@ Options ParseOptions(int argc, char** argv) {
         const std::string argument = argv[index];
         if (argument == "--serial-narrowphase") {
             options.serialNarrowphase = true;
+            continue;
+        }
+        if (argument == "--serial-islands") {
+            options.serialIslands = true;
             continue;
         }
         if (index + 1 >= argc) {
@@ -464,6 +470,7 @@ nlohmann::json RunScenario(const ScenarioDef& def, const Options& options) {
     world.SetSolverIterations(6);
     world.SetPhysicsWorkerCount(options.workers);
     world.SetParallelNarrowphaseEnabled(!options.serialNarrowphase);
+    world.SetParallelIslandSolverEnabled(!options.serialIslands);
     AddGround(world, def.groundRestitution);
     def.build(world, options);
 
@@ -478,11 +485,13 @@ nlohmann::json RunScenario(const ScenarioDef& def, const Options& options) {
     std::vector<double> broadPhaseSamples;
     std::vector<double> narrowPhaseSamples;
     std::vector<double> solverSamples;
+    std::vector<double> islandBuildSamples;
     std::vector<double> totalSamples;
     integrationSamples.reserve(options.frameCount);
     broadPhaseSamples.reserve(options.frameCount);
     narrowPhaseSamples.reserve(options.frameCount);
     solverSamples.reserve(options.frameCount);
+    islandBuildSamples.reserve(options.frameCount);
     totalSamples.reserve(options.frameCount);
 
     uint64_t candidates = 0;
@@ -498,6 +507,9 @@ nlohmann::json RunScenario(const ScenarioDef& def, const Options& options) {
     uint64_t narrowPhaseJobs = 0;
     double narrowPhaseWorkerBusyMs = 0.0;
     double narrowPhaseTailWaitMs = 0.0;
+    uint64_t islandSolverJobs = 0;
+    double islandSolverWorkerBusyMs = 0.0;
+    double islandSolverTailWaitMs = 0.0;
     Runtime::Physics::PhysicsStepStats lastStats;
 
     for (std::size_t frame = 0; frame < options.frameCount; ++frame) {
@@ -510,6 +522,7 @@ nlohmann::json RunScenario(const ScenarioDef& def, const Options& options) {
         broadPhaseSamples.push_back(lastStats.broadPhaseMilliseconds);
         narrowPhaseSamples.push_back(lastStats.narrowPhaseMilliseconds);
         solverSamples.push_back(lastStats.solverMilliseconds);
+        islandBuildSamples.push_back(lastStats.islandBuildMilliseconds);
         totalSamples.push_back(lastStats.totalMilliseconds);
         candidates += lastStats.broadPhaseCandidateCount;
         narrowPhaseTests += lastStats.narrowPhaseTestCount;
@@ -524,6 +537,9 @@ nlohmann::json RunScenario(const ScenarioDef& def, const Options& options) {
         narrowPhaseJobs += lastStats.narrowPhaseJobCount;
         narrowPhaseWorkerBusyMs += lastStats.narrowPhaseWorkerBusyMilliseconds;
         narrowPhaseTailWaitMs += lastStats.narrowPhaseTailWaitMilliseconds;
+        islandSolverJobs += lastStats.islandSolverJobCount;
+        islandSolverWorkerBusyMs += lastStats.islandSolverWorkerBusyMilliseconds;
+        islandSolverTailWaitMs += lastStats.islandSolverTailWaitMilliseconds;
     }
 
     glm::dvec3 positionChecksum(0.0);
@@ -543,6 +559,7 @@ nlohmann::json RunScenario(const ScenarioDef& def, const Options& options) {
             {"ccdEnabled", world.ContinuousCollisionEnabled()},
             {"physicsWorkers", world.PhysicsWorkerCount()},
             {"parallelNarrowphase", !options.serialNarrowphase},
+            {"parallelIslandSolver", !options.serialIslands},
         }},
         {"leaves", {
             {"static", lastStats.staticBvhLeafCount},
@@ -563,6 +580,7 @@ nlohmann::json RunScenario(const ScenarioDef& def, const Options& options) {
             {"broadPhase", Percentiles(broadPhaseSamples)},
             {"narrowPhase", Percentiles(narrowPhaseSamples)},
             {"solver", Percentiles(solverSamples)},
+            {"islandBuild", Percentiles(islandBuildSamples)},
             {"total", Percentiles(totalSamples)},
         }},
         {"futureMetrics", {
@@ -584,7 +602,23 @@ nlohmann::json RunScenario(const ScenarioDef& def, const Options& options) {
                 {"workerBusyMsTotal", narrowPhaseWorkerBusyMs},
                 {"tailWaitMsTotal", narrowPhaseTailWaitMs},
             }},
-            {"islands", {{"available", false}}},
+            // Phase 7 landed: report real island build metrics. Counts are
+            // the last sampled fixed step's snapshot; the island build wall
+            // time is in timingsMilliseconds.islandBuild.
+            {"islands", {
+                {"available", true},
+                {"islandCount", lastStats.islandCount},
+                {"maxIslandBodyCount", lastStats.islandMaxBodyCount},
+            }},
+            // Phase 8 landed: report real island solver telemetry (same
+            // wall-clock vs worker-CPU-time split as the narrow-phase block).
+            {"parallelIslandSolver", {
+                {"available", true},
+                {"workerCount", lastStats.islandSolverWorkerCount},
+                {"totalJobs", islandSolverJobs},
+                {"workerBusyMsTotal", islandSolverWorkerBusyMs},
+                {"tailWaitMsTotal", islandSolverTailWaitMs},
+            }},
             {"sleep", {{"available", false}}},
         }},
         {"positionChecksum", {positionChecksum.x, positionChecksum.y, positionChecksum.z}},

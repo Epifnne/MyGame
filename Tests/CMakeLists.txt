@@ -90,7 +90,9 @@ add_executable(Physics_Test
     Physics/Physics_BroadPhaseTest.cpp
     Physics/Physics_ContactSolverTest.cpp
     Physics/Physics_MidphaseTest.cpp
+    Physics/Physics_ParallelIslandSolverTest.cpp
     Physics/Physics_ParallelNarrowphaseTest.cpp
+    Physics/Physics_PhysicsIslandTest.cpp
     Physics/Physics_RigidBodyTest.cpp
 )
 set_test_output_dir(Physics_Test)

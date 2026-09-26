@@ -39,63 +39,67 @@ Layering rules:
 ## Core Features
 
 ### Core & Game Loop
-- `Engine` as the top-level entry: subsystem assembly, lifecycle management.
-- `GameLoop` orchestrator: initialization, per-frame update, render drive, shutdown.
-- Fixed-timestep accumulator plus variable-timestep update stages.
-- Unified input service (keyboard/mouse state sampling, per-frame event caching).
-- Time service: delta time, fixed-step accumulator, runtime statistics.
+- `Engine` as the top-level entry: window/renderer assembly and lifecycle management.
+- `GameLoop` orchestrator: fixed-timestep accumulator plus variable-timestep update stages, with render drive.
+- Unified input service: keyboard/mouse state sampling with per-frame event caching, fed by GLFW callbacks.
+- Time service: delta time, elapsed time, and FPS statistics (the fixed-step accumulator lives in `GameLoop`).
 
 ### ECS
-- Entity handles with stable IDs and generational validation, pooled allocation and reuse.
-- Type-erased component pools with contiguous storage for fast iteration.
-- Query-driven system views; systems grouped and scheduled by stage (input, simulation, pre/post render).
-- Publish/subscribe `EventBus` for decoupled cross-system communication.
-- `World` facade aggregating registry, system pool, and event bus with frame-level scheduling.
+- Header-only implementation under `Runtime/include/ECS`.
+- Entity handles as stable numeric IDs with pooled allocation and free-list reuse (generation is tracked inside the pool; stale-handle validation is not enforced yet).
+- Type-erased component pools keyed by `std::type_index`, storing components in per-entity-indexed vectors.
+- Single-component queries; systems updated in registration order via the system manager.
+- Synchronous publish/subscribe `EventBus` for cross-system communication.
+- `World` facade aggregating registry, system manager, and event bus.
 
 ### Graphics
-- Forward rendering pipeline abstraction (`RenderPipeline`) with default and minimal (`SimplePipeline`) implementations.
+- OpenGL 3.3 Core backend (GLFW windowing + GLAD loader).
+- Forward rendering pipeline abstraction (`RenderPipeline`) with default and minimal (`SimplePipeline`) implementations; draw submission and state application are handled by `Renderer::Flush`.
 - Camera, mesh, material, texture, and shader abstractions; shader/mesh/texture managers with caching and reuse.
-- Unified render state description (depth, blend, rasterizer).
-- **Shadow mapping**: directional light ShadowMap and Cascaded Shadow Maps (CSM) with cascade splitting, texel snapping stabilization, depth-only shadow passes, PCF filtering, and cascade boundary blending.
+- Unified render state description (depth, blend, rasterizer, cull, color write mask) applied around draw calls.
+- Shadow mapping (directional ShadowMap / CSM) is scaffolded at the interface level only: light and shadow-settings data structures exist, but the runtime shadow passes are not implemented yet.
 
 ### Physics
-- Deterministic fixed-step simulation pipeline: input sync → integration → broad phase → narrow phase → constraint/impulse solving → writeback to ECS.
-- **Broad phase**: dynamic BVH (fat AABBs, incremental insert/remove, reinsert-on-move).
-- **Narrow phase**: GJK + EPA contact generation with cached contact manifolds.
-- Rigid body dynamics: mass, inertia tensor, quaternion orientation, force/torque accumulation.
-- Contact solver: normal/friction impulses, position correction, one-sided contacts.
-- **Continuous collision detection**: TOI search with sub-stepping to prevent tunneling.
-- Physical materials (static/dynamic friction, restitution, combine rules), triggers, collision filtering.
-- Spatial queries: raycast, shape sweep, overlap tests.
-- Constraint abstraction for joints, distance, springs, and limits.
+- Deterministic fixed-step simulation pipeline: integration → broad phase → midphase → narrow phase → island-based impulse solving, stepped via `PhysicsSystem` (ECS writeback is not wired up yet).
+- **Broad phase**: dynamic BVH (fat AABBs, incremental insert/remove, refit with reinsert-on-move) with separate static/dynamic trees.
+- **Midphase**: persistent pair pool with generational handles, cached contact manifolds with local-anchor matching and accumulated-impulse warm-start caches, Enter/Stay/Exit contact events.
+- **Narrow phase**: GJK + EPA contact generation with up to 4-point manifolds, parallelized across worker threads via a shared `JobSystem`; independent physics islands are solved in parallel.
+- Rigid body dynamics: mass, inertia tensor, quaternion orientation, force/torque accumulation, semi-implicit Euler integration.
+- Contact solver: accumulated normal/friction impulses with friction-disc clamping, warm starting, position correction, one-sided contact normal redirection (static friction is stored but not yet used by the solver).
+- **Continuous collision detection**: sampled TOI search with bisection refinement and sub-stepping to prevent tunneling.
+- Physical materials (friction, restitution, combine rules), triggers, and layer/mask collision filtering.
+- Spatial queries: AABB raycast; shape sweep and overlap queries are not implemented yet.
+- Constraint abstraction exists as a minimal interface; concrete joint/distance/spring constraints are not implemented yet.
 
 ### Network
-- Client-server architecture over TCP (reliable messages) and UDP (real-time state).
-- Dedicated network thread with a thread-safe event queue, bridged to ECS via `EventBus`.
-- Binary message serialization with custom type registration and ID-based dispatch.
-- Packet buffering: fragmentation, reassembly, ordering, flow control.
-- Sessions with authentication state, heartbeat, timeout detection, and one-shot reconnect.
-- Server-authoritative state snapshots (delta compression) and client-side prediction with rollback (scaffolding in place, staged rollout).
+- Client-server messaging over TCP, with a platform socket wrapper that also supports UDP.
+- Dedicated network thread with a thread-safe event queue; `NetworkSystem` bridges network events toward the ECS.
+- Binary message serialization with type-ID-based dispatch.
+- Packet buffering with fragmentation and reassembly.
+- Client connection with heartbeat and one-shot reconnect; local server demo under `Tools/`; TCP loopback tests wired into CTest.
+- Reliable-UDP channel, state snapshots, and client-side prediction/rollback are interface placeholders only (staged roadmap, not implemented).
 
 ### Resource
-- Virtual file system abstraction over platform file IO.
-- `ResourceManager` facade with load/get/release; state machine + reference counting per resource.
-- Asset database mapping GUIDs to metadata; import pipeline converting source assets to runtime formats.
-- Typed loaders for textures (mipmaps, color space), meshes (vertex layouts, submeshes, tangents), materials, and shaders (variant keys, reflection data).
-- Hot-reload watcher: file change detection with incremental reload and dependency propagation.
+- Virtual file system abstraction: mount points, virtual path resolution, text/binary IO over the platform file system.
+- `ResourceManager` facade with a sync/async loading pipeline (IO → decode → upload) and cache-based eviction via `shared_ptr` use counts.
+- Asset database mapping GUIDs to metadata with virtual-path reverse lookup.
+- Generic resource handles (`Runtime::Handle` in `Common/`) with typed aliases (`AssetHandle`, `MeshHandle`, `TextureHandle`).
+- Typed loaders for textures, meshes, materials, and shaders currently wrap raw file data; format-specific parsing (mipmaps, vertex layouts, shader variants/reflection) is not implemented yet.
+- Hot-reload watcher: modification-time polling and change detection; automatic reload and dependency propagation are not wired up yet.
 
 ### UI
-- Two-layer UI: retained-mode widget tree for game UI + ImGui overlay for debugging/tooling.
-- Screen Space and World Space canvases; anchor/absolute layout engine with margins and alignment.
-- Hit-testing and event routing along the widget tree, bridged to the ECS `EventBus`.
-- One-way data binding (observer pattern) from data sources to widgets.
-- Style/theme system with runtime theme switching.
-- Full widget set: Label, Button, Image, Panel, Slider, ListView, ScrollView, InputField, Toggle, ProgressBar, TreeView, TabView, DropDown, Dialog.
+- Header-only retained-mode widget tree prototype (the `src/UI` `.cpp` files are empty translation units).
+- Canvas with Screen/World Space markers; anchor-based layout engine with margins.
+- Hit-testing and event routing along the widget tree (bridging to the ECS `EventBus` is defined but not wired up yet).
+- One-way data binding primitives: observable properties with subscribe/notify.
+- Basic style sheet structure (global and per-type styles); runtime theme switching is not implemented.
+- Widgets with basic interactions: Label, Button, Image, Panel, Slider, ListView, InputField, Toggle, ProgressBar, TreeView, TabView, DropDown; ScrollView and Dialog are minimal stubs.
+- `DebugUI` is currently a text-line cache; ImGui integration is not implemented yet.
 
 ### Gameplay Framework
 - Attribute sets with base values and stacked modifiers (Add / Multiply / Override).
 - Gameplay effects: spec + runtime instance, modifiers, duration, granted tags.
-- Gameplay tags: centralized registry with reference-counted gating.
+- Gameplay tags: centralized name/ID registry; per-entity tag reference counting lives in `GameplaySystem`.
 - `GameplaySystem` facade aggregating attributes, tags, and effects per entity.
 
 ### AI
@@ -104,8 +108,8 @@ Layering rules:
 - Type-safe blackboard for shared decision data; external services injectable via leaf node user data.
 
 ### Platform
-- Window abstraction: creation/destruction, event polling, swap-chain presentation, size management.
-- Platform utilities: paths, environment, clocks, system capability queries.
+- Window abstraction over GLFW: creation/destruction, event polling, buffer swap, size and VSync management.
+- Platform utilities (paths, environment, clocks, capability queries) are not implemented yet; `PlatformUtils` is a placeholder.
 
 ## Building (Windows)
 
@@ -138,6 +142,7 @@ CI and Release builds also use Ninja with platform-default compilers: GCC on Lin
 ## Documentation
 
 - [Architecture (Chinese)](Docs/Architecture.md) — module responsibilities and layering contracts
+- [Improvement Plan (Chinese)](Docs/ImprovementPlan.md) — known gaps and optimization directions from the 2026-09 code review
 - [Physics Collision Optimization Plan](Docs/PhysicsCollisionOptimizationPlan.md)
 - [Physics Debug Notes](Docs/physicsdebug.md)
 - [CI Debug Playbook](Docs/CI_DEBUG_PLAYBOOK.md)
