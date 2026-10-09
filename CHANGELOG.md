@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 Format:
 
 - Unreleased
+  - Fixed (2026-10-09): registered the nlohmann_json submodule URL and initialized it in CI and Release workflows so fresh checkouts can configure successfully
   - Added (2026-10-08): island-level sleep with displacement/orientation probes, retained sleeping contact pairs, whole-island wake-up on external activity and confirmed collisions, and awake/sleeping body telemetry
   - Added: analytic sphere/sphere and sphere/box queries, 15-axis box SAT, clipped convex contact patches with physical surface witnesses and contact topology, and separate SAT/primitive query counters
   - Changed: persistent contact reuse validates generation-relative poses and tangential anchor drift; impulse matching uses a 1 cm local-anchor threshold and preserves tangent/spin caches

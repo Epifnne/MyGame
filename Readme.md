@@ -114,6 +114,12 @@ Layering rules:
 
 ## Building (Windows)
 
+For a fresh checkout, initialize the required dependencies first:
+
+```powershell
+git submodule update --init --depth 1 ThirdParty/glfw ThirdParty/glad ThirdParty/glm ThirdParty/imgui ThirdParty/stb ThirdParty/nlohmann_json
+```
+
 The repo uses Ninja and Qt MinGW 13.1. Use `release-o3` for samples and performance
 validation (`Build-release`, `-O3 -DNDEBUG`); `mingw-debug` uses `Build` for debugging.
 

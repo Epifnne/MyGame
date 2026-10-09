@@ -25,7 +25,7 @@ jobs:
         shell: bash
         run: |
           git submodule sync --recursive
-          git submodule update --init --depth 1 ThirdParty/glfw ThirdParty/glad ThirdParty/glm ThirdParty/imgui ThirdParty/stb
+          git submodule update --init --depth 1 ThirdParty/glfw ThirdParty/glad ThirdParty/glm ThirdParty/imgui ThirdParty/stb ThirdParty/nlohmann_json
 
       - name: Set up Python
         uses: actions/setup-python@v5
