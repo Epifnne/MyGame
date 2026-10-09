@@ -60,13 +60,11 @@ public:
 private:
 
     Runtime::ECS::World m_world;
-    Runtime::ECS::Entity m_cubeEntity = Runtime::ECS::NullEntity;
 
     std::shared_ptr<Runtime::Graphics::Mesh> m_mesh;
     std::shared_ptr<Runtime::Graphics::Mesh> m_ballMesh;
     Runtime::Graphics::MeshManager m_meshManager;
     Runtime::Graphics::TextureManager m_textureManager;
-    Runtime::Graphics::Material m_material;
     Runtime::Graphics::Material m_groundMaterial;
     Runtime::Graphics::Material m_ballMaterial;
     Runtime::Graphics::Camera m_camera;

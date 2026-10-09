@@ -1,14 +1,16 @@
-#include "Systems/CubeRenderSystem.h"
+#include "CubeRenderSystem.h"
 
-#include "Components/CubeRenderComponent.h"
-#include "Components/RotationComponent.h"
-#include "Components/Transform3DComponent.h"
+#include "CubeRenderComponent.h"
+#include <ECS/Component.h>
 
 #include <Graphics/Renderer.h>
 #include <glm/gtc/matrix_transform.hpp>
 
-namespace Game {
+namespace Sample {
 namespace Systems {
+
+using Runtime::ECS::Components::Rotation;
+using Runtime::ECS::Components::Transform3D;
 
 void CubeRenderSystem::Render(Runtime::ECS::World& world,
                               Runtime::Graphics::Renderer& renderer,
@@ -17,15 +19,15 @@ void CubeRenderSystem::Render(Runtime::ECS::World& world,
                               const Runtime::Graphics::Camera& camera) {
     auto entities = world.RegistryRef().EntitiesWith<Components::CubeRenderComponent>();
     for (auto entity : entities) {
-        if (!world.RegistryRef().HasComponent<Components::Transform3DComponent>(entity)) {
+        if (!world.RegistryRef().HasComponent<Transform3D>(entity)) {
             continue;
         }
-        if (!world.RegistryRef().HasComponent<Components::RotationComponent>(entity)) {
+        if (!world.RegistryRef().HasComponent<Rotation>(entity)) {
             continue;
         }
 
-        const auto& transform = world.RegistryRef().GetComponent<Components::Transform3DComponent>(entity);
-        const auto& rotation = world.RegistryRef().GetComponent<Components::RotationComponent>(entity);
+        const auto& transform = world.RegistryRef().GetComponent<Transform3D>(entity);
+        const auto& rotation = world.RegistryRef().GetComponent<Rotation>(entity);
 
         glm::mat4 model = glm::mat4(1.0f);
         model = glm::translate(model, transform.position);
@@ -39,4 +41,4 @@ void CubeRenderSystem::Render(Runtime::ECS::World& world,
 }
 
 } // namespace Systems
-} // namespace Game
+} // namespace Sample

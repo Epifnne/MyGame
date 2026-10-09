@@ -2,7 +2,7 @@
 
 #include <glm/glm.hpp>
 
-namespace Game {
+namespace Sample {
 namespace Components {
 
 struct CubeRenderComponent {
@@ -12,4 +12,4 @@ struct CubeRenderComponent {
 };
 
 } // namespace Components
-} // namespace Game
+} // namespace Sample

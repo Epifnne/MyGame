@@ -30,9 +30,11 @@ struct Options {
     // Phase 6: physics worker count (0 = hardware concurrency, 1 = fully
     // serial deterministic fallback) and the parallel narrow-phase toggle.
     // Phase 8 adds the parallel island solver toggle.
+    // Phase 9 adds the island sleep toggle (sleep is enabled by default).
     uint32_t workers = 0;
     bool serialNarrowphase = false;
     bool serialIslands = false;
+    bool noSleep = false;
 };
 
 Options ParseOptions(int argc, char** argv) {
@@ -45,6 +47,10 @@ Options ParseOptions(int argc, char** argv) {
         }
         if (argument == "--serial-islands") {
             options.serialIslands = true;
+            continue;
+        }
+        if (argument == "--no-sleep") {
+            options.noSleep = true;
             continue;
         }
         if (index + 1 >= argc) {
@@ -471,6 +477,7 @@ nlohmann::json RunScenario(const ScenarioDef& def, const Options& options) {
     world.SetPhysicsWorkerCount(options.workers);
     world.SetParallelNarrowphaseEnabled(!options.serialNarrowphase);
     world.SetParallelIslandSolverEnabled(!options.serialIslands);
+    world.SetSleepEnabled(!options.noSleep);
     AddGround(world, def.groundRestitution);
     def.build(world, options);
 
@@ -496,6 +503,8 @@ nlohmann::json RunScenario(const ScenarioDef& def, const Options& options) {
 
     uint64_t candidates = 0;
     uint64_t narrowPhaseTests = 0;
+    uint64_t satCalls = 0;
+    uint64_t primitiveCalls = 0;
     uint64_t gjkCalls = 0;
     uint64_t gjkFailures = 0;
     uint64_t epaCalls = 0;
@@ -526,6 +535,8 @@ nlohmann::json RunScenario(const ScenarioDef& def, const Options& options) {
         totalSamples.push_back(lastStats.totalMilliseconds);
         candidates += lastStats.broadPhaseCandidateCount;
         narrowPhaseTests += lastStats.narrowPhaseTestCount;
+        satCalls += lastStats.satCallCount;
+        primitiveCalls += lastStats.primitiveCallCount;
         gjkCalls += lastStats.gjkCallCount;
         gjkFailures += lastStats.gjkFailureCount;
         epaCalls += lastStats.epaCallCount;
@@ -560,6 +571,7 @@ nlohmann::json RunScenario(const ScenarioDef& def, const Options& options) {
             {"physicsWorkers", world.PhysicsWorkerCount()},
             {"parallelNarrowphase", !options.serialNarrowphase},
             {"parallelIslandSolver", !options.serialIslands},
+            {"sleepEnabled", !options.noSleep},
         }},
         {"leaves", {
             {"static", lastStats.staticBvhLeafCount},
@@ -568,6 +580,8 @@ nlohmann::json RunScenario(const ScenarioDef& def, const Options& options) {
         {"totals", {
             {"broadPhaseCandidates", candidates},
             {"narrowPhaseTests", narrowPhaseTests},
+            {"satCalls", satCalls},
+            {"primitiveCalls", primitiveCalls},
             {"gjkCalls", gjkCalls},
             {"gjkFailures", gjkFailures},
             {"epaCalls", epaCalls},
@@ -619,7 +633,13 @@ nlohmann::json RunScenario(const ScenarioDef& def, const Options& options) {
                 {"workerBusyMsTotal", islandSolverWorkerBusyMs},
                 {"tailWaitMsTotal", islandSolverTailWaitMs},
             }},
-            {"sleep", {{"available", false}}},
+            // Phase 9 landed: report real island sleep metrics. Counts are
+            // the last sampled fixed step's dynamic-body snapshot.
+            {"sleep", {
+                {"available", true},
+                {"awakeBodies", lastStats.awakeBodyCount},
+                {"sleepingBodies", lastStats.sleepingBodyCount},
+            }},
         }},
         {"positionChecksum", {positionChecksum.x, positionChecksum.y, positionChecksum.z}},
     };

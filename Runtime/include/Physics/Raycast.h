@@ -14,12 +14,14 @@
 namespace Runtime {
 namespace Physics {
 
+// World-space ray input; Cast normalizes its direction before measuring distance.
 struct Ray {
 	// Ray start point and cast direction in world space.
 	glm::vec3 origin = glm::vec3(0.0f);
 	glm::vec3 direction = glm::vec3(0.0f, -1.0f, 0.0f);
 };
 
+// Nearest AABB hit; a miss retains the requested maximum distance.
 struct RaycastHit {
 	// Closest hit result data.
 	bool hit = false;
@@ -29,9 +31,11 @@ struct RaycastHit {
 	float distance = 0.0f;
 };
 
+// Linear scan against collider world AABBs, not exact shape surfaces.
 class Raycast {
 public:
-	// Cast a ray against all colliders and return nearest hit within maxDistance.
+	// Return the nearest AABB slab hit in [0,maxDistance], ignoring collider masks/trigger flags.
+	// Rays starting inside bounds hit at distance zero; equal-distance hits overwrite earlier ones.
 	static RaycastHit Cast(
 		const Ray& ray,
 		float maxDistance,
@@ -79,7 +83,8 @@ public:
 	}
 
 private:
-	// Slab test between ray and AABB.
+	// Intersect t intervals [(min-origin)/d,(max-origin)/d] on each axis.
+	// Parallel axes require the origin inside that slab; tNear/tFar are clipped in place.
 	static bool IntersectRayAABB(
 		const glm::vec3& origin,
 		const glm::vec3& direction,
@@ -118,7 +123,7 @@ private:
 		return true;
 	}
 
-	// Estimate hit normal from dominant axis on AABB surface.
+	// Choose the signed axis of greatest absolute center offset, without scaling by extents.
 	static glm::vec3 EstimateNormal(const AABB& aabb, const glm::vec3& point) {
 		const glm::vec3 center = (aabb.min + aabb.max) * 0.5f;
 		const glm::vec3 local = point - center;

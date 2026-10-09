@@ -1,5 +1,6 @@
 #include "Physics/Midphase.h"
 
+#include <cmath>
 #include <utility>
 
 #include <glm/gtc/quaternion.hpp>
@@ -7,6 +8,48 @@
 namespace Runtime {
 namespace Physics {
 
+// Transport true surface anchors only while the generation-relative geometry remains valid.
+bool MidphasePair::TryReuseContact(
+    const RigidBody& bodyA, const RigidBody& bodyB,
+    ContactManifold& outManifold, float maxSeparation) const {
+    // Geometry reuse requires a nearly unchanged relative pose, not merely a nearby pair.
+    constexpr float kMaxTranslationSq = 0.001f * 0.001f;
+    constexpr float kMinOrientationDot = 0.9998477f;
+    const glm::vec3 displacementA = bodyA.Position() - contactPositionA;
+    const glm::vec3 displacementB = bodyB.Position() - contactPositionB;
+    if (!hadContact || cacheClearedThisQuery || manifold.isTrigger || manifold.pointCount == 0 ||
+        glm::dot(displacementB - displacementA, displacementB - displacementA) > kMaxTranslationSq ||
+        std::abs(glm::dot(bodyA.Orientation(), contactOrientationA)) < kMinOrientationDot ||
+        std::abs(glm::dot(bodyB.Orientation(), contactOrientationB)) < kMinOrientationDot) {
+        return false;
+    }
+
+    outManifold.normalOnB = manifold.normalOnB;
+    outManifold.normal = glm::normalize(manifold.normalOnB ?
+        bodyB.Orientation() * glm::conjugate(contactOrientationB) * contactNormal :
+        bodyA.Orientation() * glm::conjugate(contactOrientationA) * contactNormal);
+    outManifold.topology = manifold.topology;
+    for (std::size_t index = 0; index < manifold.pointCount; ++index) {
+        const ContactPoint& oldPoint = manifold.Point(index);
+        ContactPoint point;
+        point.surfacePointA = bodyA.Position() + bodyA.Orientation() * oldPoint.surfaceLocalA;
+        point.surfacePointB = bodyB.Position() + bodyB.Orientation() * oldPoint.surfaceLocalB;
+        // penetration=dot(surfaceA-surfaceB,normal); negative values are remaining gaps.
+        point.penetration = glm::dot(point.surfacePointA - point.surfacePointB, outManifold.normal);
+        const glm::vec3 delta = point.surfacePointA - point.surfacePointB;
+        const glm::vec3 slide = delta - point.penetration * outManifold.normal;
+        // Persistent anchors are valid only while their tangential drift stays small.
+        if (point.penetration < -maxSeparation || glm::dot(slide, slide) > 0.0001f) {
+            outManifold.ClearPoints();
+            return false;
+        }
+        point.position = 0.5f * (point.surfacePointA + point.surfacePointB);
+        outManifold.AddPoint(point);
+    }
+    return true;
+}
+
+// Set query stamps/coverage, clear work and counters, then recycle earlier deferred removals.
 void Midphase::BeginQuery(
     uint64_t queryEpoch,
     uint64_t fixedStepId,
@@ -21,6 +64,7 @@ void Midphase::BeginQuery(
     RecyclePendingRemovals();
 }
 
+// Allocate or revalidate a persistent pair and append its slot to this query's work list.
 uint32_t Midphase::RegisterCandidate(
     const PairKey& key,
     const Collider& colliderA,
@@ -46,7 +90,7 @@ uint32_t Midphase::RegisterCandidate(
         MidphasePair& pair = m_slots[slotIndex].pair;
         pair.state = PairLifecycleState::Persisting;
 
-        // Frozen invalidation matrix: collider identity/revision (replacement,
+        // Invalidate on collider identity/revision (replacement,
         // shape, trigger, one-sided, layer/mask), material value, external pose
         // (teleport) and mass/inertia/static changes all clear the contact
         // caches without ending the touching state by themselves.
@@ -65,42 +109,67 @@ uint32_t Midphase::RegisterCandidate(
     return slotIndex;
 }
 
-void Midphase::FinishQuery(std::vector<ContactEvent>& events) {
-    if (m_coverage == BroadPhaseQueryCoverage::FullScene) {
-        for (auto it = m_pairToSlot.begin(); it != m_pairToSlot.end();) {
-            MidphasePair& pair = m_slots[it->second.index].pair;
-            if (pair.lastSeenQueryEpoch == m_queryEpoch) {
-                ++it;
-                continue;
-            }
-            // The pair belonged to this query's full re-check coverage and was
-            // not returned: the candidate is removed. Touching pairs publish
-            // Exit with the stable PairKey before the slot is queued for
-            // recycling at the next synchronization point.
-            if (pair.hadContact) {
-                PushEvent(events, ContactEventType::Exit, pair.key);
-            }
-            pair.hadContact = false;
-            pair.needsNarrowphase = false;
-            pair.state = PairLifecycleState::Removed;
-            m_pendingRemoval.push_back(it->second.index);
-            ++m_stats.removedPairCount;
-            it = m_pairToSlot.erase(it);
+// Sweep unseen covered pairs; retain any existing pair with a sleeping dynamic endpoint.
+void Midphase::FinishQuery(
+    const std::unordered_map<uint32_t, RigidBody>& bodies,
+    const std::unordered_map<uint32_t, Collider>& colliders,
+    std::vector<ContactEvent>& events) {
+    for (auto it = m_pairToSlot.begin(); it != m_pairToSlot.end();) {
+        MidphasePair& pair = m_slots[it->second.index].pair;
+        if (pair.lastSeenQueryEpoch == m_queryEpoch) {
+            ++it;
+            continue;
         }
+
+        // FullScene removes all unseen pairs. ActiveDynamics always covers
+        // missing endpoints, but retains unseen pairs if either endpoint is
+        // sleeping dynamic, including awake-sleeping pairs.
+        if (m_coverage == BroadPhaseQueryCoverage::ActiveDynamics) {
+            const auto bodyItA = bodies.find(pair.key.bodyA);
+            const auto bodyItB = bodies.find(pair.key.bodyB);
+            const bool endpointMissing =
+                bodyItA == bodies.end() || bodyItB == bodies.end() ||
+                colliders.find(pair.key.bodyA) == colliders.end() ||
+                colliders.find(pair.key.bodyB) == colliders.end();
+            if (!endpointMissing) {
+                const bool sleepingDynamicA =
+                    !bodyItA->second.IsStatic() && bodyItA->second.IsSleeping();
+                const bool sleepingDynamicB =
+                    !bodyItB->second.IsStatic() && bodyItB->second.IsSleeping();
+                if (sleepingDynamicA || sleepingDynamicB) {
+                    ++it;
+                    continue;
+                }
+            }
+        }
+
+        // The pair belonged to this query's coverage and was not returned:
+        // the candidate is removed. Touching pairs publish Exit with the
+        // stable PairKey before the slot is queued for recycling at the next
+        // synchronization point.
+        if (pair.hadContact) {
+            PushEvent(events, ContactEventType::Exit, pair.key);
+        }
+        pair.hadContact = false;
+        pair.needsNarrowphase = false;
+        pair.state = PairLifecycleState::Removed;
+        m_pendingRemoval.push_back(it->second.index);
+        ++m_stats.removedPairCount;
+        it = m_pairToSlot.erase(it);
     }
 
     m_stats.activePairCount = m_pairToSlot.size();
     m_stats.workListSize = m_workList.size();
 }
 
+// Stamp fresh surface anchors and match impulses; reused geometry keeps its original reference pose.
 void Midphase::CommitContact(
     uint32_t slotIndex,
     const RigidBody& bodyA,
     const RigidBody& bodyB,
     bool isTrigger,
     ContactManifold freshManifold,
-    bool isToiImpact,
-    std::vector<ContactEvent>& events) {
+    std::vector<ContactEvent>& events, bool reused) {
     MidphasePair& pair = m_slots[slotIndex].pair;
     const ContactManifold oldManifold = pair.manifold;
 
@@ -114,27 +183,38 @@ void Midphase::CommitContact(
         ContactPoint& point = freshManifold.Point(index);
         point.localPointA = invOrientationA * (point.position - bodyA.Position());
         point.localPointB = invOrientationB * (point.position - bodyB.Position());
+        point.surfaceLocalA = invOrientationA * (point.surfacePointA - bodyA.Position());
+        point.surfaceLocalB = invOrientationB * (point.surfacePointB - bodyB.Position());
     }
 
     // Transfer accumulated impulse caches from the matched previous points,
     // unless this query's binding check already cleared them. A significant
-    // normal flip also transfers nothing (handled inside the matcher).
+    // normal flip also transfers nothing (handled inside the matcher). The
+    // matcher only transfers impulse caches — the fresh narrow-phase anchors
+    // stay (freezing them across a rebuilt manifold under a drifting normal
+    // produced wild penetrations; stability comes from TryReuseContact).
     if (!pair.cacheClearedThisQuery) {
         MatchPersistentContactPoints(oldManifold, freshManifold);
     }
 
     for (std::size_t index = 0; index < freshManifold.pointCount; ++index) {
         ContactPoint& point = freshManifold.Point(index);
-        // The current sub-step's TOI flag is fresh; the cache interpretation
-        // data (old tangent basis, cachedDt, TOI origin) was transferred by
-        // the matcher above and is re-stamped by the solver when it stores
-        // the solved cache at sub-step end.
-        point.isToiImpact = isToiImpact;
+        // The cache interpretation data (old tangent basis, cachedDt) was
+        // transferred by the matcher above and is re-stamped by the solver
+        // when it stores the solved cache at sub-step end.
         // Per-sub-step accumulation base for the solver-visible field.
         point.normalImpulse = 0.0f;
     }
 
     pair.manifold = std::move(freshManifold);
+    // Keep the generation reference across reuse: incremental tolerances must not accumulate.
+    if (!reused) {
+        pair.contactNormal = pair.manifold.normal;
+        pair.contactPositionA = bodyA.Position();
+        pair.contactPositionB = bodyB.Position();
+        pair.contactOrientationA = bodyA.Orientation();
+        pair.contactOrientationB = bodyB.Orientation();
+    }
     pair.cacheClearedThisQuery = false;
 
     // Fixed-step impulse totals restart at the first touch of a new fixed
@@ -156,6 +236,7 @@ void Midphase::CommitContact(
     pair.lastTouchFixedStepId = m_fixedStepId;
 }
 
+// End touching and clear points/caches without removing the broad-phase candidate.
 void Midphase::CommitSeparation(uint32_t slotIndex, std::vector<ContactEvent>& events) {
     MidphasePair& pair = m_slots[slotIndex].pair;
     // Normal separation: the candidate pair is kept (fat AABBs still overlap),
@@ -168,6 +249,7 @@ void Midphase::CommitSeparation(uint32_t slotIndex, std::vector<ContactEvent>& e
     ClearContactCaches(pair);
 }
 
+// Preserve all persistent state on algorithm failure; the caller excludes solver input.
 void Midphase::CommitQueryFailure(uint32_t slotIndex) {
     // Deliberately no state change: an algorithm failure is counted by the
     // narrow-phase stats and never poses as a normal separation, so no Exit is
@@ -175,6 +257,7 @@ void Midphase::CommitQueryFailure(uint32_t slotIndex) {
     (void)slotIndex;
 }
 
+// Read the mapped live pair; removed keys are absent even before slot recycling.
 const MidphasePair* Midphase::FindPair(const PairKey& key) const {
     const auto it = m_pairToSlot.find(key);
     if (it == m_pairToSlot.end()) {
@@ -183,6 +266,7 @@ const MidphasePair* Midphase::FindPair(const PairKey& key) const {
     return &m_slots[it->second.index].pair;
 }
 
+// Return mutable mapped storage, or null for an absent key.
 MidphasePair* Midphase::FindPair(const PairKey& key) {
     const auto it = m_pairToSlot.find(key);
     if (it == m_pairToSlot.end()) {
@@ -191,6 +275,7 @@ MidphasePair* Midphase::FindPair(const PairKey& key) {
     return &m_slots[it->second.index].pair;
 }
 
+// Validate sentinel, bounds, occupancy, and generation; lifecycle state is not tested.
 bool Midphase::IsHandleValid(const PairHandle& handle) const {
     if (!handle.IsValid() || handle.index >= m_slots.size()) {
         return false;
@@ -199,6 +284,7 @@ bool Midphase::IsHandleValid(const PairHandle& handle) const {
     return slot.occupied && slot.generation == handle.generation;
 }
 
+// Pop the free list or append storage, marking the returned slot occupied.
 uint32_t Midphase::AllocateSlot() {
     if (!m_freeSlots.empty()) {
         const uint32_t index = m_freeSlots.back();
@@ -212,6 +298,7 @@ uint32_t Midphase::AllocateSlot() {
     return static_cast<uint32_t>(m_slots.size() - 1);
 }
 
+// Reset deferred entries and increment generations before making their indices reusable.
 void Midphase::RecyclePendingRemovals() {
     for (const uint32_t index : m_pendingRemoval) {
         Slot& slot = m_slots[index];
@@ -225,6 +312,7 @@ void Midphase::RecyclePendingRemovals() {
     m_pendingRemoval.clear();
 }
 
+// Snapshot revisions rather than integrated poses, and copy materials by value.
 PairBindingSnapshot Midphase::CaptureBinding(
     const Collider& colliderA,
     const RigidBody& bodyA,
@@ -244,19 +332,20 @@ PairBindingSnapshot Midphase::CaptureBinding(
     return binding;
 }
 
+// Clear cached normal/tangent/spin impulses and their basis/timestep interpretation.
 void Midphase::ClearContactCaches(MidphasePair& pair) {
     for (std::size_t index = 0; index < pair.manifold.pointCount; ++index) {
         ContactPoint& point = pair.manifold.Point(index);
         point.accumulatedNormalImpulse = 0.0f;
         point.accumulatedTangentImpulse = glm::vec2(0.0f);
+        point.accumulatedSpinImpulse = 0.0f;
         point.cachedTangent1 = glm::vec3(0.0f);
         point.cachedTangent2 = glm::vec3(0.0f);
         point.cachedDt = 0.0f;
-        point.isToiImpact = false;
-        point.cacheFromToiImpact = false;
     }
 }
 
+// Append the pair transition with this query's temporal stamps.
 void Midphase::PushEvent(
     std::vector<ContactEvent>& events,
     ContactEventType type,

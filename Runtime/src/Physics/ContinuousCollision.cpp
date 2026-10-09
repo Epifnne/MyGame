@@ -2,168 +2,176 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
+#include "Physics/Midphase.h"
 #include "Physics/NarrowPhase.h"
 
 namespace Runtime {
 namespace Physics {
+namespace {
+constexpr float kCastContactTolerance = 0.0002f;
+constexpr int kMaxCastIterations = 512;
 
+// Bound every surface point relative to the body's rotation center, including offset hulls.
+float RadiusAboutBody(const AABB& bounds, const glm::vec3& center) {
+    return glm::length(glm::max(glm::abs(bounds.min - center), glm::abs(bounds.max - center)));
+}
+}
+
+// Match pose integration: q(t) = normalize(q + 0.5*t*(omega*q)).
 ShapeTransform ContinuousCollisionDetector::InterpolateTransform(const RigidBody& body, float t) {
-    ShapeTransform tf;
-    tf.position = body.Position() + body.LinearVelocity() * t;
-
-    const glm::vec3 angularVelocity = body.AngularVelocity();
-    const float speed = glm::length(angularVelocity);
-    if (speed <= 1e-6f) {
-        tf.orientation = body.Orientation();
-        return tf;
-    }
-
-    const glm::vec3 axis = angularVelocity / speed;
-    const float angle = speed * t;
-    const glm::quat dq = glm::angleAxis(angle, axis);
-    tf.orientation = glm::normalize(dq * body.Orientation());
-    return tf;
+    const glm::vec3 w = body.AngularVelocity();
+    return {body.Position() + t * body.LinearVelocity(),
+        glm::normalize(body.Orientation() +
+            0.5f * t * glm::quat(0.0f, w.x, w.y, w.z) * body.Orientation())};
 }
 
-AABB ContinuousCollisionDetector::SweptAabb(const Collider& collider, const RigidBody& body, float maxTime) {
-    const ShapeTransform t0 = InterpolateTransform(body, 0.0f);
-    const ShapeTransform t1 = InterpolateTransform(body, maxTime);
-    return AABB::Merge(collider.ComputeAABB(t0), collider.ComputeAABB(t1));
+// Bound translation and all intermediate rotations by the tip travel |omega|*r*dt.
+AABB ContinuousCollisionDetector::SweptAabb(
+    const Collider& collider, const RigidBody& body, float maxTime) {
+    const AABB initial = collider.ComputeAABB(InterpolateTransform(body, 0.0f));
+    const AABB final = collider.ComputeAABB(InterpolateTransform(body, maxTime));
+    const float radius = RadiusAboutBody(initial, body.Position());
+    return AABB::Merge(initial, final).Expanded(
+        glm::length(body.AngularVelocity()) * radius * maxTime);
 }
 
+// Build an impact patch inside the numerical TOI tolerance, without applying forces.
 bool ContinuousCollisionDetector::GenerateContactAtTime(
-    const Collider& colliderA,
-    const RigidBody& bodyA,
-    const Collider& colliderB,
-    const RigidBody& bodyB,
-    float t,
-    ContactManifold& outContact) const {
-    RigidBody interpolatedA = bodyA;
-    RigidBody interpolatedB = bodyB;
-
+    const Collider& colliderA, const RigidBody& bodyA,
+    const Collider& colliderB, const RigidBody& bodyB,
+    float t, ContactManifold& outContact) const {
+    RigidBody a = bodyA, b = bodyB;
     const ShapeTransform tfA = InterpolateTransform(bodyA, t);
     const ShapeTransform tfB = InterpolateTransform(bodyB, t);
-    interpolatedA.SetPosition(tfA.position);
-    interpolatedA.SetOrientation(tfA.orientation);
-    interpolatedB.SetPosition(tfB.position);
-    interpolatedB.SetOrientation(tfB.orientation);
-
+    a.SetPosition(tfA.position);
+    a.SetOrientation(tfA.orientation);
+    b.SetPosition(tfB.position);
+    b.SetOrientation(tfB.orientation);
     GjkEpaNarrowPhase narrow;
-    // CCD stays on the calling thread this phase; statistics are discarded.
-    NarrowPhaseQueryStats ignoredStats;
-    return narrow.GenerateContact(colliderA, interpolatedA, colliderB, interpolatedB, outContact, ignoredStats);
+    narrow.SetSpeculativeContactDistance(kCastContactTolerance);
+    NarrowPhaseQueryStats stats;
+    const bool hit = narrow.GenerateContact(colliderA, a, colliderB, b, outContact, stats);
+    if (stats.gjkFailureCount || stats.epaFailureCount)
+        throw std::runtime_error("CCD impact manifold query failed");
+    return hit;
 }
 
+// Search swept candidates, advance quadratic gap bounds, and deterministically break equal-time ties.
 TimeOfImpact ContinuousCollisionDetector::FindEarliestImpact(
     const std::unordered_map<uint32_t, Collider>& colliders,
     const std::unordered_map<uint32_t, RigidBody>& bodies,
-    float maxTime) const {
+    const Midphase& midphase, float maxTime, float motionThreshold) const {
     TimeOfImpact best;
     best.toi = maxTime;
+    if (maxTime <= 0.0f || colliders.size() < 2) return best;
 
-    if (maxTime <= 0.0f || colliders.size() < 2) {
-        return best;
+    for (uint32_t id : m_sweptTree.CollectBodyIds())
+        if (colliders.find(id) == colliders.end() || bodies.find(id) == bodies.end())
+            m_sweptTree.RemoveLeaf(id);
+
+    std::vector<uint32_t> fast;
+    for (const auto& [id, collider] : colliders) {
+        const auto it = bodies.find(id);
+        if (it == bodies.end()) continue;
+        const RigidBody& body = it->second;
+        const AABB tight = collider.ComputeAABB(InterpolateTransform(body, 0.0f));
+        const glm::vec3 extent = 0.5f * (tight.max - tight.min);
+        float innerRadius = std::min({extent.x, extent.y, extent.z});
+        if (const auto* box = dynamic_cast<const BoxShape*>(collider.Shape().get()))
+            innerRadius = std::min({box->HalfExtents().x, box->HalfExtents().y, box->HalfExtents().z});
+        const float travel = maxTime * (glm::length(body.LinearVelocity()) +
+            glm::length(body.AngularVelocity()) * RadiusAboutBody(tight, body.Position()));
+        const float cutoff = motionThreshold > 0.0f ?
+            std::min(0.5f * innerRadius, motionThreshold) : 0.5f * innerRadius;
+        if (!body.IsStatic() && !body.IsSleeping() && travel > cutoff)
+            fast.push_back(id);
+        m_sweptTree.UpsertLeaf(id, SweptAabb(collider, body, maxTime));
     }
-
-    std::vector<uint32_t> ids;
-    ids.reserve(colliders.size());
-    for (const auto& kv : colliders) {
-        ids.push_back(kv.first);
-    }
-
-    for (size_t i = 0; i < ids.size(); ++i) {
-        const uint32_t idA = ids[i];
-        auto colliderItA = colliders.find(idA);
-        auto bodyItA = bodies.find(idA);
-        if (colliderItA == colliders.end() || bodyItA == bodies.end()) {
-            continue;
-        }
-
-        for (size_t j = i + 1; j < ids.size(); ++j) {
-            const uint32_t idB = ids[j];
-            auto colliderItB = colliders.find(idB);
-            auto bodyItB = bodies.find(idB);
-            if (colliderItB == colliders.end() || bodyItB == bodies.end()) {
-                continue;
-            }
-
-            const Collider& colliderA = colliderItA->second;
-            const Collider& colliderB = colliderItB->second;
-            const RigidBody& bodyA = bodyItA->second;
-            const RigidBody& bodyB = bodyItB->second;
-
-            if (!colliderA.CanCollideWith(colliderB)) {
-                continue;
-            }
-            if (bodyA.IsStatic() && bodyB.IsStatic()) {
-                continue;
-            }
-
-            const AABB sweptA = SweptAabb(colliderA, bodyA, maxTime);
-            const AABB sweptB = SweptAabb(colliderB, bodyB, maxTime);
-            if (!sweptA.Intersects(sweptB)) {
-                continue;
-            }
-
-            ContactManifold contactAtStart;
-            if (GenerateContactAtTime(colliderA, bodyA, colliderB, bodyB, 0.0f, contactAtStart)) {
-                best.hit = true;
-                best.toi = 0.0f;
-                best.bodyA = std::min(idA, idB);
-                best.bodyB = std::max(idA, idB);
-                best.contact = contactAtStart;
-                return best;
-            }
-
-            // Temporal sampling catches transient "hit then separate" events in high-speed motion.
-            constexpr int kTimeSamples = 48;
-            float prevT = 0.0f;
-            bool foundPairImpact = false;
-            float pairToi = maxTime;
-            ContactManifold pairContact;
-
-            for (int s = 1; s <= kTimeSamples; ++s) {
-                const float t = maxTime * (static_cast<float>(s) / static_cast<float>(kTimeSamples));
-                ContactManifold sampledContact;
-                if (!GenerateContactAtTime(colliderA, bodyA, colliderB, bodyB, t, sampledContact)) {
-                    prevT = t;
-                    continue;
-                }
-
-                float lo = prevT;
-                float hi = t;
-                ContactManifold bestContactForPair = sampledContact;
-
-                for (int iter = 0; iter < 20; ++iter) {
-                    const float mid = 0.5f * (lo + hi);
-                    ContactManifold midContact;
-                    if (GenerateContactAtTime(colliderA, bodyA, colliderB, bodyB, mid, midContact)) {
-                        hi = mid;
-                        bestContactForPair = midContact;
-                    } else {
-                        lo = mid;
+    std::sort(fast.begin(), fast.end());
+    GjkEpaNarrowPhase narrow;
+    for (uint32_t idA : fast) {
+        const Collider& a = colliders.at(idA);
+        const RigidBody& bodyA = bodies.at(idA);
+        const AABB region = SweptAabb(a, bodyA, maxTime);
+        // Sweep each unordered fast-body pair once; masks filter candidates before advancement.
+        m_sweptTree.QueryLeafOverlaps(region, [&](uint32_t idB) {
+            if (idA == idB || (idB < idA && std::binary_search(fast.begin(), fast.end(), idB))) return;
+            const Collider& b = colliders.at(idB);
+            const RigidBody& bodyB = bodies.at(idB);
+            if (!a.CanCollideWith(b)) return;
+            // Bound surface distance from the rotation center using the initial AABB corners.
+            const auto radius = [&](const Collider& collider, const RigidBody& body) {
+                const AABB bounds = collider.ComputeAABB(InterpolateTransform(body, 0.0f));
+                return RadiusAboutBody(bounds, body.Position());
+            };
+            const float radiusA = radius(a, bodyA);
+            const float radiusB = radius(b, bodyB);
+            float time = 0.0f;
+            float lastGap = 0.0f;
+            for (int iteration = 0; iteration < kMaxCastIterations; ++iteration) {
+                glm::vec3 normal;
+                float gap = 0.0f;
+                const ShapeTransform tfA = InterpolateTransform(bodyA, time);
+                const ShapeTransform tfB = InterpolateTransform(bodyB, time);
+                const bool separated = narrow.GetSeparation(a, tfA, b, tfB, normal, gap);
+                lastGap = gap;
+                if (!separated || gap <= kCastContactTolerance) {
+                    const MidphasePair* pair = midphase.FindPair(MakePairKey(idA, idB));
+                    if (time == 0.0f && pair && pair->hadContact && separated) return;
+                    ContactManifold contact;
+                    if (GenerateContactAtTime(a, bodyA, b, bodyB, time, contact)) {
+                        // An initial overlap belongs to discrete detection, not a zero-time impact.
+                        if (time > 0.0f && (time < best.toi ||
+                            (time == best.toi && MakePairKey(idA, idB) < MakePairKey(best.bodyA, best.bodyB)))) {
+                            best.hit = true;
+                            best.toi = time;
+                            best.bodyA = std::min(idA, idB);
+                            best.bodyB = std::max(idA, idB);
+                            if (idA > idB) {
+                                contact.normal = -contact.normal;
+                                contact.normalOnB = !contact.normalOnB;
+                                for (std::size_t p = 0; p < contact.pointCount; ++p)
+                                    std::swap(contact.Point(p).surfacePointA, contact.Point(p).surfacePointB);
+                            }
+                            contact.bodyA = best.bodyA;
+                            contact.bodyB = best.bodyB;
+                            best.contact = contact;
+                        }
+                        return;
                     }
+                    if (!separated) throw std::runtime_error("CCD separation query failed");
                 }
-
-                foundPairImpact = true;
-                pairToi = hi;
-                pairContact = bestContactForPair;
-                break;
+                // Bound the changing support plane: gap(t+h) >= gap - closing*h - a*h^2/2.
+                const glm::vec3 axisA = glm::cross(normal, bodyA.AngularVelocity());
+                const glm::vec3 axisB = glm::cross(-normal, bodyB.AngularVelocity());
+                const float closing = glm::dot(bodyA.LinearVelocity() - bodyB.LinearVelocity(), normal) +
+                    glm::dot(a.Shape()->Support(tfA, axisA) - tfA.position, axisA) +
+                    glm::dot(b.Shape()->Support(tfB, axisB) - tfB.position, axisB);
+                const float curvature = glm::length(axisA) * glm::length(bodyA.AngularVelocity()) * radiusA +
+                    glm::length(axisB) * glm::length(bodyB.AngularVelocity()) * radiusB;
+                const float distance = std::max(gap - 0.5f * kCastContactTolerance, 0.00001f);
+                float advance;
+                // Solve closing*h+curvature*h^2/2=distance; rationalize for positive closing.
+                if (curvature > 1e-6f) {
+                    const float root = std::sqrt(closing * closing + 2.0f * curvature * distance);
+                    advance = closing > 0.0f ? 2.0f * distance / (closing + root) :
+                        (root - closing) / curvature;
+                } else {
+                    if (closing <= 1e-6f) return;
+                    advance = distance / closing;
+                }
+                time += advance;
+                if (time > best.toi) return;
             }
-
-            if (foundPairImpact && pairToi < best.toi) {
-                best.hit = true;
-                best.toi = pairToi;
-                best.bodyA = std::min(idA, idB);
-                best.bodyB = std::max(idA, idB);
-                best.contact = pairContact;
-            }
-        }
+            throw std::runtime_error("CCD conservative advancement did not converge: pair=" +
+                std::to_string(idA) + "-" + std::to_string(idB) + " time=" + std::to_string(time) +
+                " gap=" + std::to_string(lastGap) + " horizon=" + std::to_string(best.toi));
+        });
     }
-
     return best;
 }
 

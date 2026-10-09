@@ -25,7 +25,10 @@ endif()
 
 add_executable(ECS_Test
     ECS/RuntimeECS_SmokeTest.cpp
+    ECS/MetalCubeSampleTest.cpp
+    ${CMAKE_SOURCE_DIR}/Sample/MetalCube/CubeRotationSystem.cpp
 )
+target_include_directories(ECS_Test PRIVATE ${CMAKE_SOURCE_DIR}/Sample)
 set_test_output_dir(ECS_Test)
 
 target_link_libraries(ECS_Test
@@ -94,6 +97,8 @@ add_executable(Physics_Test
     Physics/Physics_ParallelNarrowphaseTest.cpp
     Physics/Physics_PhysicsIslandTest.cpp
     Physics/Physics_RigidBodyTest.cpp
+    Physics/Physics_SleepTest.cpp
+    Physics/Physics_StackPipelineTest.cpp
 )
 set_test_output_dir(Physics_Test)
 

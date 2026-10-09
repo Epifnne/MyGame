@@ -79,6 +79,9 @@ std::unique_ptr<PhysicsWorld> MakeBoxFieldWorld(uint32_t workerCount, bool islan
     world->SetContinuousCollisionEnabled(false);
     world->SetPhysicsWorkerCount(workerCount);
     world->SetParallelIslandSolverEnabled(islandParallel);
+    // This test targets solver bit-exactness, not sleep: keep the settled
+    // boxes awake so their islands keep participating (Phase 9).
+    world->SetSleepEnabled(false);
     AddGround(*world);
 
     uint32_t lcgState = 1337;
@@ -212,8 +215,11 @@ TEST(PhysicsParallelIslandSolverTest, MultiWorkerMatchesSingleWorkerBitExact) {
     const WorldSnapshot parallel = RunAndCapture(*parallelWorld, 60);
 
     ASSERT_GT(serial.contactPoints, 0u);
-    // The box field settles into many independent ground-contact islands.
-    ASSERT_GE(serial.islandCount, 8u);
+    // The box field settles into a few independent ground-contact islands.
+    // The speculative contact band merges boxes resting within the band into
+    // one island, so the count is lower than the pre-speculative baseline;
+    // the gate only requires clearly more than one island.
+    ASSERT_GE(serial.islandCount, 2u);
     ExpectSnapshotsBitExact(serial, parallel);
 }
 
@@ -239,6 +245,7 @@ TEST(PhysicsParallelIslandSolverTest, SharedStaticGroundSolvedIdenticalAcrossWor
         world->SetFixedTimeStep(kFixedDt);
         world->SetContinuousCollisionEnabled(false);
         world->SetPhysicsWorkerCount(workerCount);
+        world->SetSleepEnabled(false); // solver equivalence, not sleep (Phase 9)
         AddGround(*world);
         const auto shape = std::make_shared<BoxShape>(glm::vec3(0.45f));
         for (const float stackX : {-5.0f, 5.0f}) {
@@ -281,6 +288,7 @@ TEST(PhysicsParallelIslandSolverTest, JobTelemetryReflectsSchedulingAndSerialFal
         world->SetContinuousCollisionEnabled(false);
         world->SetPhysicsWorkerCount(workerCount);
         world->SetIslandSolverMinConstraintsPerJob(1);
+        world->SetSleepEnabled(false); // solver telemetry, not sleep (Phase 9)
         AddGround(*world);
         const auto shape = std::make_shared<BoxShape>(glm::vec3(0.45f));
         for (std::size_t index = 0; index < 12; ++index) {

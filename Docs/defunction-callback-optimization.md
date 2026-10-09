@@ -1,7 +1,7 @@
 # Phase 5 补充：热路径回调去类型擦除 + Benchmark A/B 对比记录
 
 > 日期：2026-09-11。状态：已落地并通过确定性门。
-> 关联：[plan.md](plan.md) Phase 5 第 25 条、[phase4-investigation.md](phase4-investigation.md)。
+> 原关联的阶段计划与调查笔记已移除；当前功能摘要见 [Changelog](../CHANGELOG.md)，验证入口见 [Benchmark Guide](../Benchmark/README.md)。
 
 ## 背景与动机
 
@@ -136,4 +136,4 @@ call _ZNSt10_HashtableI...findERS1_.isra.0  (x2)    ; 回调的两次 hash find 
 
 该说法基本正确但需限定：`std::function` 的间接调用在**跨越类型擦除边界**时编译器无法去虚拟化（目标在运行时经 `_M_invoker` 函数指针确定）。仅当编译器能在**同一翻译单元看到 `std::function` 的构造点**且能常量传播出 invoker 时才可能去虚拟化——`BvhTree`（模板在头文件、回调类型在调用方）这种跨 TU 场景不会发生。擦除版那处 `call *24(%r13)` 就是未被去虚拟化的实证。
 
-看汇编的具体操作步骤见 [how-to-read-assembly.md](how-to-read-assembly.md)。
+原汇编操作指南已不在仓库中；上文保留了本次对照所用的汇编片段。

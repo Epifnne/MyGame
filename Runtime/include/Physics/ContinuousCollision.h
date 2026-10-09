@@ -6,10 +6,14 @@
 #include "Collider.h"
 #include "ContactManifold.h"
 #include "RigidBody.h"
+#include "BvhTree.h"
 
 namespace Runtime {
 namespace Physics {
 
+class Midphase;
+
+// Earliest positive-time impact patch with sorted body IDs; misses retain the search horizon.
 struct TimeOfImpact {
     // Whether an impact is found in [0, maxTime].
     bool hit = false;
@@ -21,21 +25,29 @@ struct TimeOfImpact {
     ContactManifold contact;
 };
 
+// Swept-BVH candidate search followed by conservative advancement with rotational bounds.
 class ContinuousCollisionDetector {
 public:
-    // Search earliest impact for all collider pairs within the time window.
+    // Search pairs reached by fast awake dynamic bodies within the time window.
+    // Initial overlaps are owned by the discrete solver. Separated speculative
+    // pairs are still swept: their current patch may miss a new rotational feature.
+    // Gate travel by min(half the smallest half extent,motionThreshold), if threshold>0.
+    // Zero uses only the shape-size cutoff; this is independent of the speculative band.
     TimeOfImpact FindEarliestImpact(
         const std::unordered_map<uint32_t, Collider>& colliders,
         const std::unordered_map<uint32_t, RigidBody>& bodies,
-        float maxTime) const;
+        const Midphase& midphase,
+        float maxTime, float motionThreshold = 0.02f) const;
 
 private:
-    // Approximate body transform at time t using current velocities.
+    // Refit swept leaves per window; fast bodies query this tree instead of all pairs.
+    mutable BvhTree m_sweptTree;
+    // Use p(t)=p+v*t and q(t)=normalize(q+0.5*t*(omega*q)).
     static ShapeTransform InterpolateTransform(const RigidBody& body, float t);
-    // Build swept bounds from t=0 to t=maxTime for quick rejection.
+    // Merge endpoint bounds and pad by |omega|*body-relative radius*maxTime.
     static AABB SweptAabb(const Collider& collider, const RigidBody& body, float maxTime);
 
-    // Generate contact for a specific pair at a specific time sample.
+    // Query copied bodies at time t with a 0.0002 contact band; throw on GJK/EPA failure.
     bool GenerateContactAtTime(
         const Collider& colliderA,
         const RigidBody& bodyA,

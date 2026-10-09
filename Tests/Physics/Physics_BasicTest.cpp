@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <limits>
+#include <stdexcept>
 #include <vector>
 
 #include <glm/gtc/quaternion.hpp>
@@ -17,13 +19,110 @@ using Runtime::Physics::ShapeTransform;
 using Runtime::Physics::SphereShape;
 using Runtime::Physics::SupportFeatureType;
 
-TEST(CollisionFeatureTest, BoxClassifiesVertexEdgeAndFace) {
+TEST(PhysicsWorldTest, CcdAndSpeculativeThresholdsAreIndependent) {
+    PhysicsWorld world;
+    EXPECT_FLOAT_EQ(world.CcdMotionThreshold(), 0.02f);
+    EXPECT_FLOAT_EQ(world.SpeculativeContactDistance(), 0.02f);
+    EXPECT_FLOAT_EQ(world.Settings().ccdMotionThreshold, 0.02f);
+
+    world.SetSpeculativeContactDistance(0.0f);
+    EXPECT_FLOAT_EQ(world.CcdMotionThreshold(), 0.02f);
+    world.SetCcdMotionThreshold(0.2f);
+    EXPECT_FLOAT_EQ(world.CcdMotionThreshold(), 0.2f);
+    EXPECT_FLOAT_EQ(world.Settings().ccdMotionThreshold, 0.2f);
+    EXPECT_FLOAT_EQ(world.SpeculativeContactDistance(), 0.0f);
+
+    world.SetSpeculativeContactDistance(0.04f);
+    EXPECT_FLOAT_EQ(world.CcdMotionThreshold(), 0.2f);
+    world.SetCcdMotionThreshold(0.0f);
+    EXPECT_FLOAT_EQ(world.CcdMotionThreshold(), 0.0f);
+    EXPECT_FLOAT_EQ(world.SpeculativeContactDistance(), 0.04f);
+}
+
+TEST(PhysicsWorldTest, CcdMotionThresholdRejectsInvalidValues) {
+    PhysicsWorld world;
+    world.SetCcdMotionThreshold(0.03f);
+    for (const float invalid : {-0.01f, std::numeric_limits<float>::infinity(),
+                                 -std::numeric_limits<float>::infinity(),
+                                 std::numeric_limits<float>::quiet_NaN()}) {
+        EXPECT_THROW(world.SetCcdMotionThreshold(invalid), std::invalid_argument);
+        EXPECT_FLOAT_EQ(world.CcdMotionThreshold(), 0.03f);
+    }
+}
+
+TEST(PhysicsWorldTest, CcdActivationUsesItsOwnThresholdAndShapeSizeCutoff) {
+    for (const float radius : {0.5f, 0.05f}) {
+        for (const float band : {0.0f, 0.02f, 0.04f}) {
+            for (const float threshold : {0.02f, 0.2f, 0.0f}) {
+                SCOPED_TRACE(::testing::Message() << "radius=" << radius
+                    << " band=" << band << " threshold=" << threshold);
+                PhysicsWorld world;
+                world.SetPhysicsWorkerCount(1);
+                world.SetGravity(glm::vec3(0.0f));
+                world.SetFixedTimeStep(1.0f / 60.0f);
+                world.SetContinuousCollisionEnabled(true);
+                world.SetCcdMotionThreshold(threshold);
+                world.SetSpeculativeContactDistance(band);
+
+                RigidBodyDesc wall;
+                wall.isStatic = true;
+                const uint32_t wallId = world.CreateRigidBody(wall);
+                ColliderDesc wallCollider;
+                wallCollider.shape = std::make_shared<BoxShape>(glm::vec3(0.01f, 1.0f, 1.0f));
+                wallCollider.material.restitution = 0.0f;
+                ASSERT_TRUE(world.AttachCollider(wallId, wallCollider));
+
+                RigidBodyDesc moving;
+                moving.position = glm::vec3(-radius - 0.06f, 0.0f, 0.0f);
+                moving.linearVelocity = glm::vec3(6.0f, 0.0f, 0.0f);
+                moving.useGravity = false;
+                const uint32_t movingId = world.CreateRigidBody(moving);
+                ColliderDesc movingCollider;
+                movingCollider.shape = std::make_shared<SphereShape>(radius);
+                movingCollider.material.restitution = 0.0f;
+                ASSERT_TRUE(world.AttachCollider(movingId, movingCollider));
+
+                // Initial gap 0.05 exceeds every band; travel 0.1 exceeds the small-shape cutoff.
+                world.Step(1.0f / 60.0f);
+                const auto* body = world.GetRigidBody(movingId);
+                ASSERT_NE(body, nullptr);
+                const bool expectCcd = radius == 0.05f || threshold == 0.02f;
+                if (expectCcd) {
+                    EXPECT_GT(world.LastStepStats().ccdToiHitCount, 0u);
+                    EXPECT_LE(body->Position().x, -radius - 0.009f);
+                    EXPECT_NEAR(body->LinearVelocity().x, 0.0f, 1e-4f);
+                } else {
+                    EXPECT_EQ(world.LastStepStats().ccdToiHitCount, 0u);
+                    EXPECT_NEAR(body->Position().x, -radius + 0.04f, 1e-5f);
+                    EXPECT_FLOAT_EQ(body->LinearVelocity().x, 6.0f);
+                }
+            }
+        }
+    }
+}
+
+TEST(CollisionFeatureTest, BoxAlwaysAnswersDominantFace) {
+    // Jolt-style contract (BoxShape::GetSupportingFace): a box answers every
+    // direction with the face whose normal is most aligned, even for
+    // vertex/edge-ish directions. Tolerance-based feature collection
+    // degenerates faces under the ~1e-3 rad normal noise of distance
+    // queries, collapsing contact manifolds to single points; off-plane
+    // vertices are rejected later by the manifold clip's separation filter.
     BoxShape box(glm::vec3(0.5f));
     Runtime::Physics::ShapeTransform transform;
 
-    EXPECT_EQ(box.GetSupportFeature(transform, glm::vec3(1.0f, 1.0f, 1.0f)).type, SupportFeatureType::Vertex);
-    EXPECT_EQ(box.GetSupportFeature(transform, glm::vec3(1.0f, 1.0f, 0.0f)).type, SupportFeatureType::Edge);
-    EXPECT_EQ(box.GetSupportFeature(transform, glm::vec3(1.0f, 0.0f, 0.0f)).type, SupportFeatureType::Face);
+    for (const glm::vec3 direction : {glm::vec3(1.0f, 1.0f, 1.0f),
+                                      glm::vec3(1.0f, 1.0f, 0.0f),
+                                      glm::vec3(1.0f, 0.0f, 0.0f)}) {
+        const auto feature = box.GetSupportFeature(transform, direction);
+        EXPECT_EQ(feature.type, SupportFeatureType::Face);
+        ASSERT_EQ(feature.vertices.size(), 4u);
+        // The dominant axis is +x in all three cases: every returned vertex
+        // lies on the +x face plane (x = +0.5, y/z spanning both signs).
+        for (const glm::vec3& vertex : feature.vertices) {
+            EXPECT_FLOAT_EQ(vertex.x, 0.5f);
+        }
+    }
 }
 
 TEST(ConvexHullShapeTest, SupportUsesLocalVerticesAndWorldTransform) {
@@ -98,7 +197,7 @@ TEST(ConvexHullShapeTest, ParticipatesInCollisionDetection) {
 
     ASSERT_EQ(world.Contacts().size(), 1u);
     EXPECT_TRUE(world.Contacts().front().isTrigger);
-    EXPECT_GT(world.Contacts().front().point.penetration, 0.0f);
+    EXPECT_GT(world.Contacts().front().Point(0).penetration, 0.0f);
 }
 
 TEST(ConvexHullShapeTest, RejectsSeparatedPair) {
@@ -164,7 +263,7 @@ TEST(ConvexHullShapeTest, TetrahedronOverlapsBox) {
 
     ASSERT_EQ(world.Contacts().size(), 1u);
     EXPECT_TRUE(world.Contacts().front().isTrigger);
-    EXPECT_GT(world.Contacts().front().point.penetration, 0.0f);
+    EXPECT_GT(world.Contacts().front().Point(0).penetration, 0.0f);
 }
 
 TEST(ConvexHullShapeTest, RotatedOctahedronOverlapsSphere) {
@@ -200,7 +299,7 @@ TEST(ConvexHullShapeTest, RotatedOctahedronOverlapsSphere) {
 
     ASSERT_EQ(world.Contacts().size(), 1u);
     EXPECT_TRUE(world.Contacts().front().isTrigger);
-    EXPECT_GT(world.Contacts().front().point.penetration, 0.0f);
+    EXPECT_GT(world.Contacts().front().Point(0).penetration, 0.0f);
 }
 
 TEST(ConvexHullShapeTest, RotatedConvexHullsOverlap) {
@@ -239,7 +338,7 @@ TEST(ConvexHullShapeTest, RotatedConvexHullsOverlap) {
 
     ASSERT_EQ(world.Contacts().size(), 1u);
     EXPECT_TRUE(world.Contacts().front().isTrigger);
-    EXPECT_GT(world.Contacts().front().point.penetration, 0.0f);
+    EXPECT_GT(world.Contacts().front().Point(0).penetration, 0.0f);
 }
 
 TEST(ConvexHullShapeTest, RejectsDisjointHullsWithOverlappingAabbs) {
@@ -311,9 +410,17 @@ TEST(ConvexHullShapeTest, EpaContactUsesClosestFaceWitnessPoints) {
 
     ASSERT_EQ(world.Contacts().size(), 1u);
     const auto& contact = world.Contacts().front();
-    EXPECT_GT(contact.point.penetration, 0.0f);
-    EXPECT_NEAR(contact.point.position.y, 0.0f, 1e-3f);
-    EXPECT_NEAR(contact.point.position.z, 0.0f, 1e-3f);
+    ASSERT_EQ(contact.pointCount, 4u);
+    glm::vec3 center(0.0f);
+    for (std::size_t index = 0; index < contact.pointCount; ++index) {
+        const auto& point = contact.Point(index);
+        EXPECT_GT(point.penetration, 0.0f);
+        EXPECT_NEAR(point.position.x, 0.75f, 1e-3f);
+        center += point.position;
+    }
+    center /= static_cast<float>(contact.pointCount);
+    EXPECT_NEAR(center.y, 0.0f, 1e-3f);
+    EXPECT_NEAR(center.z, 0.0f, 1e-3f);
 }
 
 TEST(ConvexHullShapeTest, FaceContactBuildsFourPointManifold) {
@@ -409,7 +516,7 @@ TEST(PhysicsWorldTest, OverlapGeneratesContact) {
         const bool reverse = contact.bodyA == bId && contact.bodyB == aId;
         if (direct || reverse) {
             foundPair = true;
-            EXPECT_GT(contact.point.penetration, 0.0f);
+            EXPECT_GT(contact.Point(0).penetration, 0.0f);
         }
     }
 
@@ -447,9 +554,10 @@ TEST(PhysicsWorldTest, DetectsOnceAndSeparatesSolverPassesPerSubstep) {
     EXPECT_EQ(stats.narrowPhaseTestCount, 1u);
     EXPECT_EQ(stats.staticBvhLeafCount, 0u);
     EXPECT_EQ(stats.dynamicBvhLeafCount, 2u);
-    EXPECT_EQ(stats.gjkCallCount, 1u);
+    EXPECT_EQ(stats.satCallCount, 1u);
+    EXPECT_EQ(stats.gjkCallCount, 0u);
     EXPECT_EQ(stats.gjkFailureCount, 0u);
-    EXPECT_EQ(stats.epaCallCount, 1u);
+    EXPECT_EQ(stats.epaCallCount, 0u);
     EXPECT_EQ(stats.epaFailureCount, 0u);
     EXPECT_EQ(stats.manifoldCount, 1u);
     EXPECT_GT(stats.contactPointCount, 0u);
@@ -509,7 +617,7 @@ TEST(PhysicsWorldTest, RotatedBoxAndSphereGenerateContact) {
             continue;
         }
         found = true;
-        EXPECT_GT(c.point.penetration, 0.0f);
+        EXPECT_GT(c.Point(0).penetration, 0.0f);
         EXPECT_GT(glm::length(c.normal), 0.5f);
     }
 
@@ -689,4 +797,66 @@ TEST(PhysicsWorldTest, CcdSubStepsConsumeForceAcrossFullFixedStep) {
     // force must not gain any extra acceleration.
     world.Step(1.0f / 60.0f);
     EXPECT_NEAR(sphere->LinearVelocity().x, 50.0f, 2.0f);
+}
+
+// Phase 10 step 38: a fast-rotating long bar must be CCD-scanned by its
+// swept ROTATIONAL extent, not just its center-of-mass translation. A bar
+// that barely translates but whose tip sweeps through a target must not
+// tunnel: the tip travels |w| * (halfLength) this step, far beyond the
+// center-of-mass motion.
+TEST(PhysicsWorldTest, CcdCatchesFastRotatingLongBar) {
+    PhysicsWorld world;
+    world.SetFixedTimeStep(1.0f / 120.0f);
+    world.SetGravity(glm::vec3(0.0f));
+    world.SetContinuousCollisionEnabled(true);
+    world.SetCcdMaxSubSteps(12);
+
+    // A static sphere sitting off the bar's rotation axis, on the tip's swept
+    // arc reachable THIS step. The bar spins 40 rad/s (0.33 rad per step) and
+    // the tip reaches 2*sin(0.33) ~ 0.65 m. The sphere at (0.5, 0.4) sits on
+    // the swept annulus: at x=0.5 the bar surface rises to ~0.4 m mid-step.
+    // Away from the axis, so the rotating bar sweeps through it.
+    RigidBodyDesc targetDesc;
+    targetDesc.position = {0.5f, 0.4f, 0.0f};
+    targetDesc.isStatic = true;
+    targetDesc.useGravity = false;
+    const uint32_t targetId = world.CreateRigidBody(targetDesc);
+    ColliderDesc targetCollider;
+    targetCollider.shape = std::make_shared<SphereShape>(0.3f);
+    targetCollider.material.restitution = 0.0f;
+    ASSERT_TRUE(world.AttachCollider(targetId, targetCollider));
+
+    // A long bar spinning about Z at 40 rad/s: its tip (half length 2 m)
+    // sweeps at 80 m/s, crossing the target within this step, while the bar's
+    // center of mass does not move at all.
+    RigidBodyDesc barDesc;
+    barDesc.position = {0.0f, 0.0f, 0.0f};
+    barDesc.angularVelocity = {0.0f, 0.0f, 40.0f};
+    barDesc.mass = 1.0f;
+    barDesc.inertiaTensorDiagonal = glm::vec3(1.0f);
+    barDesc.useGravity = false;
+    const uint32_t barId = world.CreateRigidBody(barDesc);
+    ColliderDesc barCollider;
+    barCollider.shape = std::make_shared<BoxShape>(glm::vec3(2.0f, 0.1f, 0.1f));
+    barCollider.material.restitution = 0.0f;
+    ASSERT_TRUE(world.AttachCollider(barId, barCollider));
+
+    world.Step(1.0f / 120.0f);
+
+    // The tip sweeps 40 * 2 * dt = 0.67 m this step and must strike the
+    // target sphere: either a contact was published for the pair, or the
+    // bar's angular momentum was absorbed by the collision (rotation slowed).
+    bool sawContact = false;
+    for (const auto& contact : world.Contacts()) {
+        if (contact.bodyA == barId || contact.bodyB == barId) {
+            if (contact.bodyA == targetId || contact.bodyB == targetId) {
+                sawContact = true;
+            }
+        }
+    }
+    const auto* bar = world.GetRigidBody(barId);
+    ASSERT_NE(bar, nullptr);
+    const float slowed = glm::length(bar->AngularVelocity()) < 39.0f;
+    EXPECT_TRUE(sawContact || slowed)
+        << "rotating bar tip tunneled through the target (no contact, no slowdown)";
 }

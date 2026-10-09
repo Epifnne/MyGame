@@ -1,0 +1,3 @@
+add_runtime_sample(BoxStackSample BoxStackSample.cpp)
+embed_sample_shader(BoxStackSample instanced.vert kInstancedVertexShader)
+embed_sample_shader(BoxStackSample instanced.frag kInstancedFragmentShader)

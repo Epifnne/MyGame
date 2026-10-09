@@ -2,11 +2,6 @@
 
 #include "Components/TransformComponent.h"
 #include "Components/VelocityComponent.h"
-#include "Components/Transform3DComponent.h"
-#include "Components/RotationComponent.h"
-#include "Components/CubeRenderComponent.h"
-#include "Systems/RotationSystem.h"
-#include "Systems/CubeRenderSystem.h"
 #include "Systems/MovementSystem.h"
 
 #include <Core/Engine.h>
@@ -300,9 +295,6 @@ bool GameApp::Initialize(Runtime::Core::Engine& engine) {
         return false;
     }
 
-    m_material.SetShader(shader);
-    ConfigurePbrMaterialFromValues(m_textureManager, m_material, glm::vec3(0.95f, 0.95f, 0.98f), 1.0f, 0.08f);
-
     m_groundMaterial.SetShader(shader);
     ConfigurePbrMaterialFromValues(m_textureManager, m_groundMaterial, glm::vec3(0.22f, 0.24f, 0.28f), 0.15f, 0.75f);
 
@@ -322,19 +314,6 @@ bool GameApp::Initialize(Runtime::Core::Engine& engine) {
     auto movementEntity = m_world.CreateEntity();
     m_world.AddComponent<Components::TransformComponent>(movementEntity);
     m_world.AddComponent<Components::VelocityComponent>(movementEntity, Components::VelocityComponent{60.0f, 0.0f});
-
-    // Rotating cube as ECS entity = Transform3D + Rotation + CubeRender.
-    m_cubeEntity = m_world.CreateEntity();
-    m_world.AddComponent<Components::Transform3DComponent>(m_cubeEntity);
-    auto& cubeTransform = m_world.RegistryRef().GetComponent<Components::Transform3DComponent>(m_cubeEntity);
-    cubeTransform.position = glm::vec3(-1.6f, -0.1f, 0.0f);
-    Components::RotationComponent rotation;
-    rotation.axis = glm::normalize(glm::vec3(0.5f, 1.0f, 0.0f));
-    rotation.speed = 1.0f;
-    m_world.AddComponent<Components::RotationComponent>(m_cubeEntity, rotation);
-    m_world.AddComponent<Components::CubeRenderComponent>(m_cubeEntity);
-
-    m_world.Systems().AddSystem(std::make_unique<Systems::RotationSystem>());
 
     m_physicsWorld.SetFixedTimeStep(1.0f / 120.0f);
     m_physicsWorld.SetGravity(glm::vec3(0.0f, -10.5f, 0.0f));
@@ -764,12 +743,6 @@ void GameApp::Update(float dt, const Runtime::Core::Input& input) {
 
     m_world.Update(dt);
 
-    if (ballBody && m_world.RegistryRef().HasComponent<Components::Transform3DComponent>(m_cubeEntity)) {
-        // Keep cube and ball visually separated while ball is moving.
-        auto& cubeTransform = m_world.RegistryRef().GetComponent<Components::Transform3DComponent>(m_cubeEntity);
-        cubeTransform.position.x = -1.6f;
-    }
-
     if (input.IsKeyPressed(Runtime::Core::Key_Escape)) {
         m_shouldExit = true;
     }
@@ -805,7 +778,7 @@ void GameApp::Render(Runtime::Core::Engine& engine) {
                 renderer->Submit(*m_ballMesh, m_ballMaterial, ballModel);
             }
 
-            Systems::CubeRenderSystem::Render(m_world, *renderer, *m_mesh, m_material, m_camera);
+            renderer->Flush(m_camera);
         }
         if (window) {
             RenderFloatingTextReserved(window->GetWidth(), window->GetHeight());

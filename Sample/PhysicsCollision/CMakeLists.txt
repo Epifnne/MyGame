@@ -1,0 +1,3 @@
+add_runtime_sample(PhysicsCollisionSample PhysicsCollisionSample.cpp)
+embed_sample_shader(PhysicsCollisionSample physics.vert kPhysicsVertexShader)
+embed_sample_shader(PhysicsCollisionSample physics.frag kPhysicsFragmentShader)

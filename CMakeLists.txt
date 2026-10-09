@@ -37,6 +37,10 @@ endif()
 if(EXISTS "${CMAKE_SOURCE_DIR}/Game/src/main.cpp")
     add_executable(MyGame Game/src/main.cpp)
     target_link_libraries(MyGame PRIVATE GameLib RuntimeLib SharedLib)
+    set_property(TARGET MyGame APPEND PROPERTY LINK_DEPENDS
+        "${CMAKE_SOURCE_DIR}/Sample/MetalCube/shaders/metal.vert"
+        "${CMAKE_SOURCE_DIR}/Sample/MetalCube/shaders/metal.frag"
+    )
 
     if(EXISTS "${CMAKE_SOURCE_DIR}/Game/assets")
         add_custom_command(TARGET MyGame POST_BUILD
@@ -44,6 +48,9 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/Game/src/main.cpp")
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_SOURCE_DIR}/Game/assets"
                 "$<TARGET_FILE_DIR:MyGame>/assets"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_SOURCE_DIR}/Sample/MetalCube/shaders"
+                "$<TARGET_FILE_DIR:MyGame>/assets/shaders"
             COMMENT "Copying Game assets to runtime output directory"
         )
     endif()
@@ -60,6 +67,9 @@ if(TARGET MyGame)
     if(EXISTS "${CMAKE_SOURCE_DIR}/Game/assets")
         install(DIRECTORY "${CMAKE_SOURCE_DIR}/Game/assets/"
             DESTINATION ${CMAKE_INSTALL_BINDIR}/assets
+        )
+        install(DIRECTORY "${CMAKE_SOURCE_DIR}/Sample/MetalCube/shaders/"
+            DESTINATION ${CMAKE_INSTALL_BINDIR}/assets/shaders
         )
     endif()
 endif()

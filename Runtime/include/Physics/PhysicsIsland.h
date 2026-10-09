@@ -9,19 +9,15 @@
 namespace Runtime {
 namespace Physics {
 
-// Island-build input: one solver-relevant contact between two bodies.
-// Trigger contacts never form edges and are dropped by the builder. A contact
-// with a static endpoint is assigned to the dynamic body's island (the static
-// body is not a propagation node); static-static contacts are ignored.
+// Body-pair build input; triggers are ignored and only supplied dynamic ids become graph nodes.
 struct IslandContact {
 	uint32_t bodyA = 0;
 	uint32_t bodyB = 0;
 	bool isTrigger = false;
 };
 
-// Forward-star edge of the island graph. Edges of one body are chained through
-// `next`; `to` is the compact dynamic-body index, or kNoNode for a
-// dynamic-static boundary edge (the contact still belongs to the island).
+// Forward-star edge: compact destination node, contact input index and next edge in the source chain.
+// kNoNode marks an endpoint omitted from the supplied dynamic node set.
 struct IslandEdge {
 	static constexpr uint32_t kNoNode = std::numeric_limits<uint32_t>::max();
 
@@ -30,52 +26,41 @@ struct IslandEdge {
 	uint32_t next = kNoNode;
 };
 
-// One extracted physics island: the dynamic bodies it contains (body ids,
-// ascending) and the contacts it owns (indices into the Build() contact
-// array, ascending; trigger contacts excluded). The island list itself is
-// ordered by each island's smallest body id, so identical inputs always
-// produce identical output regardless of container iteration order.
+// Connected dynamic-body component: ascending body ids and contact indices ordered by pair key, then index.
+// Components are emitted in ascending smallest-body-id order; triggers never belong to them.
 struct PhysicsIsland {
 	std::vector<uint32_t> bodies;
 	std::vector<uint32_t> contacts;
 };
 
+// Counts from the latest graph build, including isolated dynamic nodes and directed boundary edges.
 struct IslandBuildStats {
 	// Participating dynamic bodies (forward-star node count).
 	std::size_t nodeCount = 0;
-	// Forward-star edge count: 2 per dynamic-dynamic contact plus 1 per
-	// dynamic-static contact, i.e. memory grows as O(V + E).
+	// Two edges when both endpoints are nodes, one when exactly one endpoint is a node.
 	std::size_t edgeCount = 0;
 	std::size_t islandCount = 0;
 	// Largest island's dynamic body count.
 	std::size_t maxIslandBodyCount = 0;
 };
 
-// Phase 7: builds physics islands over the dynamic bodies that currently
-// participate in solving, using a chained forward star (head array plus one
-// continuous IslandEdge array). Extraction is an iterative BFS (no recursion);
-// islands, bodies and contacts come out in stable sorted order. Internal
-// buffers (and the per-island body/contact vectors) keep their capacity
-// across frames, so steady-state builds perform no allocation growth.
-//
-// Kinematic bodies are out of scope for this version. Sleeping islands (Phase
-// 9) keep their membership and contact adjacency by simply not being removed
-// here: the caller decides which bodies participate, the builder never drops
-// adjacency information on its own.
+// Builds forward-star components using iterative depth-first traversal and reusable graph buffers.
+// Membership is determined solely by supplied body ids/contacts; this builder does not inspect sleep state.
 class PhysicsIslandBuilder {
 public:
+	// Initialize empty graph/output buffers and zero build statistics.
 	PhysicsIslandBuilder() = default;
 
-	// Rebuild the island set. dynamicBodyIds lists every dynamic body that
-	// participates in solving this sub-step (contactless bodies included:
-	// each forms a single-body island). The result reference stays valid
-	// until the next Build call.
+	// Rebuild from unique dynamic ids; isolated ids form single-body islands.
+	// Ignore triggers and contacts with no node endpoints; external endpoints do not join components.
+	// Return builder-owned output that is replaced by the next Build.
 	const std::vector<PhysicsIsland>& Build(
 		const std::vector<uint32_t>& dynamicBodyIds,
 		const std::vector<IslandContact>& contacts);
 
-	// Islands of the latest Build call.
+	// Return builder-owned components from the latest Build.
 	const std::vector<PhysicsIsland>& Islands() const { return m_islands; }
+	// Return node/edge/component counts and largest component size from the latest Build.
 	const IslandBuildStats& LastStats() const { return m_stats; }
 
 private:
@@ -91,7 +76,7 @@ private:
 	std::vector<uint8_t> m_visited;
 	std::vector<uint8_t> m_contactClaimed;
 	std::vector<uint32_t> m_bfsStack;
-	// Reused output storage; per-island vectors keep capacity across builds.
+	// Surviving output vectors retain capacity; shrinking the island list destroys discarded vectors.
 	std::vector<PhysicsIsland> m_islands;
 	IslandBuildStats m_stats;
 };

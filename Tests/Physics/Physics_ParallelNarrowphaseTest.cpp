@@ -264,7 +264,7 @@ TEST(PhysicsParallelNarrowphaseTest, JobTelemetryReflectsChunkingAndSerialFallba
     detector.SetNarrowphaseMinPairsPerJob(8);
 
     Runtime::Core::JobSystem::Get().Initialize(4);
-    detector.Detect(colliders, bodies, 1, 1, kFixedDt, false);
+    detector.Detect(colliders, bodies, 1, 1, kFixedDt);
     const NarrowPhaseParallelStats parallel = detector.LastParallelStats();
     // 40 pairs with at most 8 pairs per chunk must split into >= 5 jobs.
     EXPECT_GE(parallel.jobCount, 5u);
@@ -280,7 +280,7 @@ TEST(PhysicsParallelNarrowphaseTest, JobTelemetryReflectsChunkingAndSerialFallba
     // workerCount == 1 is the fully serial deterministic fallback executed
     // in-line on the calling thread.
     Runtime::Core::JobSystem::Get().Initialize(1);
-    detector.Detect(colliders, bodies, 1, 2, kFixedDt, false);
+    detector.Detect(colliders, bodies, 1, 2, kFixedDt);
     const NarrowPhaseParallelStats serial = detector.LastParallelStats();
     EXPECT_EQ(serial.jobCount, 1u);
     EXPECT_EQ(serial.workerParticipation, 1u);
@@ -296,17 +296,19 @@ TEST(PhysicsParallelNarrowphaseTest, MergedStatsAndContactsMatchSerial) {
     parallelDetector.SetNarrowphaseMinPairsPerJob(8);
     Runtime::Core::JobSystem::Get().Initialize(4);
     const CollisionDetectionResult& parallelResult =
-        parallelDetector.Detect(colliders, bodies, 1, 1, kFixedDt, false);
+        parallelDetector.Detect(colliders, bodies, 1, 1, kFixedDt);
     const CollisionDetectionStats parallelStats = parallelDetector.LastStats();
 
     CollisionDetector serialDetector;
     Runtime::Core::JobSystem::Get().Initialize(1);
     const CollisionDetectionResult& serialResult =
-        serialDetector.Detect(colliders, bodies, 1, 1, kFixedDt, false);
+        serialDetector.Detect(colliders, bodies, 1, 1, kFixedDt);
     const CollisionDetectionStats serialStats = serialDetector.LastStats();
 
     EXPECT_EQ(parallelStats.narrowPhaseTestCount, serialStats.narrowPhaseTestCount);
     EXPECT_EQ(parallelStats.gjkCallCount, serialStats.gjkCallCount);
+    EXPECT_EQ(parallelStats.satCallCount, serialStats.satCallCount);
+    EXPECT_EQ(parallelStats.primitiveCallCount, serialStats.primitiveCallCount);
     EXPECT_EQ(parallelStats.gjkFailureCount, serialStats.gjkFailureCount);
     EXPECT_EQ(parallelStats.epaCallCount, serialStats.epaCallCount);
     EXPECT_EQ(parallelStats.epaFailureCount, serialStats.epaFailureCount);

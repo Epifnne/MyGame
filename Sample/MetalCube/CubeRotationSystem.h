@@ -2,7 +2,7 @@
 
 #include <ECS/World.h>
 
-namespace Game {
+namespace Sample {
 namespace Systems {
 
 class CubeRotationSystem {
@@ -11,4 +11,4 @@ public:
 };
 
 } // namespace Systems
-} // namespace Game
+} // namespace Sample

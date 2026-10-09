@@ -16,11 +16,14 @@
 namespace Runtime {
 namespace Physics {
 
+// Detection counters and stage timings, accumulated across same-query wake rounds.
 struct CollisionDetectionStats {
 	std::size_t staticLeafCount = 0;
 	std::size_t dynamicLeafCount = 0;
 	std::size_t broadPhaseCandidateCount = 0;
 	std::size_t narrowPhaseTestCount = 0;
+	std::size_t satCallCount = 0;
+	std::size_t primitiveCallCount = 0;
 	std::size_t gjkCallCount = 0;
 	std::size_t gjkFailureCount = 0;
 	std::size_t epaCallCount = 0;
@@ -34,7 +37,7 @@ struct CollisionDetectionStats {
 	double narrowPhaseMilliseconds = 0.0;
 };
 
-// Phase 6 parallel narrow-phase telemetry of the last Detect call. The wall
+// Parallel narrow-phase telemetry of the latest round. The wall
 // clock stays in CollisionDetectionStats::narrowPhaseMilliseconds; this
 // records how the work was distributed across the job system.
 struct NarrowPhaseParallelStats {
@@ -48,6 +51,17 @@ struct NarrowPhaseParallelStats {
 	double tailWaitMilliseconds = 0.0;
 	std::vector<uint32_t> jobCountPerThread;
 	std::vector<double> busyMillisecondsPerThread;
+};
+
+// Non-owning synchronous callback on the commit thread for non-trigger contacts
+// with exactly one awake dynamic endpoint. The inactive endpoint is passed even
+// if static; the callback decides whether a wake occurs. Speculative/reused
+// contacts also qualify. A successful wake requests another same-pose detection
+// round (bounded by bodyCount+1); candidate proximity alone never invokes it.
+struct WakeRequestCallback {
+	void* user;
+	// Returns true when the call actually woke at least one sleeping body.
+	bool (*invoke)(void* user, uint32_t sleepingBodyId);
 };
 
 // Output of one detection query. Touching pairs are referenced by midphase
@@ -67,9 +81,9 @@ struct CollisionDetectionResult {
 // publishes contact events.
 class CollisionDetector {
 public:
-	// Create detector with default broad-phase and narrow-phase implementations.
+	// Create hybrid-BVH broad phase and analytic/SAT/GJK/EPA narrow phase.
 	CollisionDetector();
-	// Virtual resources managed by unique_ptr members.
+	// Destroy the owned stages, persistent pool, and work buffers.
 	~CollisionDetector();
 
 	// Override broad-phase stage implementation.
@@ -83,8 +97,20 @@ public:
 	void SetNarrowPhase(std::unique_ptr<NarrowPhase> narrowPhase) {
 		if (narrowPhase) {
 			m_narrowPhase = std::move(narrowPhase);
+			m_reuseDefaultNarrowphase = false;
 		}
 	}
+
+	// Clamp the speculative band to nonnegative meters and forward it to the
+	// current narrow phase; also used for reuse. No fat-margin clamp is done here.
+	void SetSpeculativeContactDistance(float distance) {
+		m_speculativeContactDistance = distance > 0.0f ? distance : 0.0f;
+		if (m_narrowPhase) {
+			m_narrowPhase->SetSpeculativeContactDistance(m_speculativeContactDistance);
+		}
+	}
+	// Read the clamped speculative band configured on this detector.
+	float SpeculativeContactDistance() const { return m_speculativeContactDistance; }
 
 	// Run one detection query for a sub-step and commit it into the persistent
 	// pair pool. The result reference stays valid until the next Detect call.
@@ -94,24 +120,41 @@ public:
 		uint64_t fixedStepId,
 		uint64_t queryEpoch,
 		float substepDt,
-		bool isToiSubstep);
+		WakeRequestCallback wakeCallback = {}, const ContactManifold* impactContact = nullptr);
+
+	// Pass through the broad-phase dynamic-leaf region query
+	// (sleeping bodies included) used for static-modification wakes.
+	void CollectDynamicLeafOverlaps(
+		const AABB& region,
+		const std::unordered_map<uint32_t, RigidBody>& bodies,
+		std::vector<uint32_t>& outBodyIds) const {
+		if (m_broadPhase) {
+			m_broadPhase->CollectDynamicLeafOverlaps(region, bodies, outBodyIds);
+		}
+	}
 
 	// Persistent pair pool; solvers read/write the persistent manifolds of the
 	// touching slots reported by Detect.
 	Midphase& GetMidphase() { return m_midphase; }
+	// Read the persistent pair pool without permitting mutation.
 	const Midphase& GetMidphase() const { return m_midphase; }
 
+	// Read counters and timings from the latest Detect call.
 	const CollisionDetectionStats& LastStats() const { return m_lastStats; }
+	// Read worker telemetry from the latest narrow-phase round.
 	const NarrowPhaseParallelStats& LastParallelStats() const { return m_lastParallelStats; }
 
-	// Phase 6: parallel narrow-phase controls. Disabled forces in-line
+	// Parallel narrow-phase controls. Disabled forces in-line
 	// execution on the calling thread; the job system worker count (1 = fully
 	// serial deterministic fallback) is owned by PhysicsWorld.
 	void SetParallelNarrowphaseEnabled(bool enabled) { m_parallelNarrowphaseEnabled = enabled; }
+	// Read whether job-system execution is permitted.
 	bool ParallelNarrowphaseEnabled() const { return m_parallelNarrowphaseEnabled; }
+	// Store the requested minimum chunk size, clamping zero to one.
 	void SetNarrowphaseMinPairsPerJob(std::size_t minPairsPerJob) {
 		m_minPairsPerJob = minPairsPerJob > 0 ? minPairsPerJob : 1;
 	}
+	// Read the minimum work items requested per chunk.
 	std::size_t NarrowphaseMinPairsPerJob() const { return m_minPairsPerJob; }
 
 private:
@@ -126,6 +169,7 @@ private:
 		};
 		Status status = Status::MissingInput;
 		bool isTrigger = false;
+		bool reused = false;
 		NarrowPhaseQueryStats stats;
 		ContactManifold manifold;
 	};
@@ -137,15 +181,31 @@ private:
 		double endMilliseconds = 0.0;
 	};
 
-	// Stage 3: run the narrow-phase over the midphase work list (serially or
-	// through Core::JobSystem) and commit outputs in stable PairKey order.
-	void ExecuteNarrowphase(
+	// One full pass over the three stages. Returns true when a confirmed
+	// awake-sleeping contact woke an island during the commit, in which case
+	// Detect re-runs the round (wake propagation closure).
+	bool RunDetectionRound(
 		const std::unordered_map<uint32_t, Collider>& colliders,
 		const std::unordered_map<uint32_t, RigidBody>& bodies,
-		bool isToiSubstep);
+		uint64_t fixedStepId,
+		uint64_t queryEpoch,
+		float substepDt,
+		WakeRequestCallback wakeCallback, const ContactManifold* impactContact);
+
+	// Stage 3: run the narrow-phase over the midphase work list (serially or
+	// through Core::JobSystem) and commit outputs in stable PairKey order.
+	// Non-trigger contacts with exactly one active endpoint invoke the wake
+	// callback on this thread before CommitContact.
+	// Returns true when any wake occurred during the commit.
+	bool ExecuteNarrowphase(
+		const std::unordered_map<uint32_t, Collider>& colliders,
+		const std::unordered_map<uint32_t, RigidBody>& bodies,
+		WakeRequestCallback wakeCallback, const ContactManifold* impactContact);
 
 	std::unique_ptr<BroadPhase> m_broadPhase;
 	std::unique_ptr<NarrowPhase> m_narrowPhase;
+	bool m_reuseDefaultNarrowphase = true;
+	float m_speculativeContactDistance = 0.0f;
 	Midphase m_midphase;
 	CollisionDetectionStats m_lastStats;
 	CollisionDetectionResult m_lastResult;

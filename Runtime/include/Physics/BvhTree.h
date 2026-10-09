@@ -10,8 +10,7 @@
 namespace Runtime {
 namespace Physics {
 
-// Single incremental BVH over body leaves with fat AABBs.
-// Extracted from DynamicBvhBroadPhase; the hybrid broad-phase owns two of them.
+// Incremental pooled BVH with fat body bounds, area-growth insertion, and ancestor refits.
 class BvhTree {
 public:
 	// Insert or refresh the leaf of bodyId:
@@ -25,7 +24,9 @@ public:
 	// Remove the leaf of bodyId if present.
 	void RemoveLeaf(uint32_t bodyId);
 
+	// Test whether the body-to-leaf map contains this identifier.
 	bool Contains(uint32_t bodyId) const;
+	// Return mapped leaf count, not the total node-pool size.
 	size_t LeafCount() const { return m_bodyToLeaf.size(); }
 
 	// Snapshot of stored body ids for external stale-leaf pruning.
@@ -142,24 +143,54 @@ public:
 		}
 	}
 
-	// Rebuild the whole tree from current leaves via top-down median splitting.
-	// Restores tree quality after many incremental updates degraded it.
+	// Clear the node pool and reinsert current fat leaves with the area-growth heuristic.
 	void Rebuild();
 
+	// DFS-prune disjoint stored fat bounds and emit matching leaves without sorting.
+	template <typename OnLeaf>
+	void QueryLeafOverlaps(const AABB& region, OnLeaf&& onLeaf) const {
+		if (m_root < 0) {
+			return;
+		}
+		std::stack<int> stack;
+		stack.push(m_root);
+		while (!stack.empty()) {
+			const int nodeIndex = stack.top();
+			stack.pop();
+			if (nodeIndex < 0 || nodeIndex >= static_cast<int>(m_nodes.size())) {
+				continue;
+			}
+			const Node& node = m_nodes[nodeIndex];
+			if (!node.active || !node.aabb.Intersects(region)) {
+				continue;
+			}
+			if (!node.IsLeaf()) {
+				stack.push(node.left);
+				stack.push(node.right);
+				continue;
+			}
+			onLeaf(node.bodyId);
+		}
+	}
+
+	// Store padding; AABB::Expanded clamps negative margins to zero during updates.
 	void SetFatMargin(float margin) { m_fatMargin = margin; }
+	// Return the configured, unclamped padding.
 	float FatMargin() const { return m_fatMargin; }
 
 	// Max tolerated surface-area growth ratio of one refit before it is upgraded
 	// to a remove + reinsert. Non-positive disables the check (always refit).
 	void SetRefitSurfaceAreaGrowthThreshold(float ratio) { m_refitGrowthThreshold = ratio; }
+	// Return the fractional area-growth limit (newArea-oldArea)/oldArea.
 	float RefitSurfaceAreaGrowthThreshold() const { return m_refitGrowthThreshold; }
 
 	// Number of leaf remove + reinsert operations that triggers a full Rebuild().
 	// Zero disables the automatic rebuild.
 	void SetRebuildUpdateThreshold(uint32_t count) { m_rebuildUpdateThreshold = count; }
+	// Return the reinsertion count limit.
 	uint32_t RebuildUpdateThreshold() const { return m_rebuildUpdateThreshold; }
 
-	// Chaos metrics: sums over the most recent query call. Surface areas let
+	// Metrics for the most recent query call. Surface areas let
 	// callers compare the actual tree against a brute-force leaf AABB baseline.
 	struct QueryMetrics {
 		std::size_t visitedNodes = 0;
@@ -167,16 +198,21 @@ public:
 		double totalNodeSurfaceArea = 0.0;
 		double leafSurfaceArea = 0.0;
 	};
+	// Copy instrumentation from the last self-query.
 	QueryMetrics LastSelfQueryMetrics() const { return m_lastSelfQueryMetrics; }
+	// Copy instrumentation from the last cross-query.
 	QueryMetrics LastCrossQueryMetrics() const { return m_lastCrossQueryMetrics; }
 
-	// Raw quality gauges, valid whenever the tree is non-empty.
+	// Sum active-node surface areas; an empty tree returns zero.
 	double TotalNodeSurfaceArea() const;
+	// Sum active-leaf surface areas only.
 	double LeafSurfaceArea() const;
 
+	// Count reinsertions since the last rebuild; insertions/refits/removals are excluded.
 	uint32_t UpdatesSinceRebuild() const { return m_updatesSinceRebuild; }
 
 private:
+	// Pooled fat-bound node; negative child indices identify a body leaf.
 	struct Node {
 		AABB aabb;
 		bool active = false;
@@ -189,13 +225,16 @@ private:
 		bool IsLeaf() const { return left < 0 && right < 0; }
 	};
 
-	// Node pool allocation helpers.
+	// Reuse a free slot or append a reset active node.
 	int AllocateNode();
+	// Reset an active node and put its index on the free list.
 	void ReleaseNode(int node);
 
-	// BVH topology maintenance operations.
+	// Descend by minimal area growth and join the leaf with the selected sibling.
 	void InsertLeaf(int leaf);
+	// Detach a leaf, promote its sibling, and release the obsolete parent.
 	void RemoveLeafNode(int leaf);
+	// Merge child bounds on the path to the root.
 	void FixUpwardTree(int node);
 
 	// Update a leaf AABB in place and refit its ancestors; topology untouched.

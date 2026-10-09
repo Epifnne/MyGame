@@ -87,6 +87,18 @@ TEST(PhysicsIsland, DynamicChainContactsMergeIntoOneIsland) {
     EXPECT_EQ(builder.LastStats().maxIslandBodyCount, 3u);
 }
 
+TEST(PhysicsIsland, ContactsFollowPairKeysEvenWhenInputIsUnsorted) {
+    PhysicsIslandBuilder builder;
+    const std::vector<IslandContact> contacts = {
+        {3, 2, false},
+        {2, 1, false},
+        {3, 1, false},
+    };
+    const std::vector<PhysicsIsland>& islands = builder.Build({1, 2, 3}, contacts);
+    ASSERT_EQ(islands.size(), 1u);
+    EXPECT_EQ(islands[0].contacts, (std::vector<uint32_t>{1, 2, 0}));
+}
+
 TEST(PhysicsIsland, SharedStaticGroundKeepsIslandsIndependent) {
     PhysicsIslandBuilder builder;
     const std::vector<uint32_t> bodies = {1, 2};

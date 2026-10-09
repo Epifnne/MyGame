@@ -7,7 +7,7 @@
 
 namespace Runtime { namespace Graphics { class Renderer; } }
 
-namespace Game {
+namespace Sample {
 namespace Systems {
 
 class CubeRenderSystem {
@@ -20,4 +20,4 @@ public:
 };
 
 } // namespace Systems
-} // namespace Game
+} // namespace Sample

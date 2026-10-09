@@ -110,7 +110,10 @@ TEST(HybridBroadPhaseTest, MatchesLegacyAndBruteForceOracle) {
     const BroadPhaseQueryResult hybridResult = hybrid.ComputePairs(scene.colliders, scene.bodies);
     const BroadPhaseQueryResult legacyResult = legacy.ComputePairs(scene.colliders, scene.bodies);
 
-    EXPECT_EQ(hybridResult.coverage, BroadPhaseQueryCoverage::FullScene);
+    // Phase 9 contract: the standard query mode is ActiveDynamics (pairs
+    // without an awake dynamic endpoint are not generated); with no sleeping
+    // bodies it degenerates to a full-scene re-check.
+    EXPECT_EQ(hybridResult.coverage, BroadPhaseQueryCoverage::ActiveDynamics);
     ExpectSortedUnique(hybridResult.pairs);
     ExpectSortedUnique(legacyResult.pairs);
 

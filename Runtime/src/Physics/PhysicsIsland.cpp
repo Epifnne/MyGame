@@ -1,10 +1,13 @@
 #include "Physics/PhysicsIsland.h"
+#include "Physics/BroadPhase.h"
 
 #include <algorithm>
 
 namespace Runtime {
 namespace Physics {
 
+// Sort supplied ids, build non-trigger adjacency and extract components with a LIFO traversal.
+// Emit ascending body lists and contacts sorted by canonical pair key, then input index; update stats.
 const std::vector<PhysicsIsland>& PhysicsIslandBuilder::Build(
 	const std::vector<uint32_t>& dynamicBodyIds,
 	const std::vector<IslandContact>& contacts) {
@@ -18,9 +21,7 @@ const std::vector<PhysicsIsland>& PhysicsIslandBuilder::Build(
 		m_idToNode.emplace(m_nodeIds[node], node);
 	}
 
-	// Chained forward star. Dynamic-dynamic non-trigger contacts write both
-	// directions; dynamic-static contacts write a single boundary edge on the
-	// dynamic body (static bodies are never propagation nodes).
+	// Two node endpoints add two directed edges; one adds a nonpropagating boundary edge.
 	m_head.assign(m_nodeIds.size(), kInvalidEdge);
 	m_edges.clear();
 	m_edges.reserve(contacts.size() * 2);
@@ -44,12 +45,10 @@ const std::vector<PhysicsIsland>& PhysicsIslandBuilder::Build(
 			m_edges.push_back({IslandEdge::kNoNode, contactIndex, m_head[node]});
 			m_head[node] = static_cast<uint32_t>(m_edges.size() - 1);
 		}
-		// Static-static contacts carry no island information; skip them.
+		// Contacts with neither endpoint in the node set add no edges.
 	}
 
-	// Iterative BFS seeded in ascending id order: the first unvisited seed is
-	// always its island's smallest id, so islands come out sorted by minimum
-	// body id without an extra pass.
+	// LIFO depth-first traversal seeded by ascending id emits components ordered by minimum id.
 	m_visited.assign(m_nodeIds.size(), 0);
 	std::size_t islandCount = 0;
 	std::size_t maxIslandBodyCount = 0;
@@ -76,9 +75,7 @@ const std::vector<PhysicsIsland>& PhysicsIslandBuilder::Build(
 			for (uint32_t edgeIndex = m_head[node]; edgeIndex != kInvalidEdge;
 				 edgeIndex = m_edges[edgeIndex].next) {
 				const IslandEdge& edge = m_edges[edgeIndex];
-				// Each non-trigger contact is claimed exactly once: a
-				// dynamic-dynamic contact appears in both endpoints' chains,
-				// the claim flag keeps it in a single island's contact list.
+				// Claim once even when a contact has edges at both endpoints.
 				if (!m_contactClaimed[edge.contact]) {
 					m_contactClaimed[edge.contact] = 1;
 					island.contacts.push_back(edge.contact);
@@ -90,7 +87,14 @@ const std::vector<PhysicsIsland>& PhysicsIslandBuilder::Build(
 			}
 		}
 		std::sort(island.bodies.begin(), island.bodies.end());
-		std::sort(island.contacts.begin(), island.contacts.end());
+		// Canonical body pair orders contacts; duplicate pairs retain input-index order.
+		std::sort(island.contacts.begin(), island.contacts.end(), [&](uint32_t lhs, uint32_t rhs) {
+			const IslandContact& a = contacts[lhs];
+			const IslandContact& b = contacts[rhs];
+			const PairKey keyA = MakePairKey(a.bodyA, a.bodyB);
+			const PairKey keyB = MakePairKey(b.bodyA, b.bodyB);
+			return keyA == keyB ? lhs < rhs : keyA < keyB;
+		});
 		maxIslandBodyCount = std::max(maxIslandBodyCount, island.bodies.size());
 	}
 	m_islands.resize(islandCount);

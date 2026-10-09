@@ -9,6 +9,7 @@
 namespace Runtime {
 namespace Physics {
 
+// Lightweight facade for body management and fixed-step world simulation.
 class World {
 public:
 	// Construct facade over PhysicsWorld.
@@ -17,8 +18,9 @@ public:
 	// Advance physics simulation.
 	void Step(float deltaTime) { m_world.Step(deltaTime); }
 
-	// Forward body creation/removal to internal world.
+	// Create a body in the owned world and return its runtime id.
 	uint32_t CreateRigidBody(const RigidBodyDesc& desc) { return m_world.CreateRigidBody(desc); }
+	// Remove a body and its collider; return whether the body existed.
 	bool DestroyRigidBody(uint32_t bodyId) { return m_world.DestroyRigidBody(bodyId); }
 
 	// Attach collider to an existing rigid body.
@@ -28,6 +30,7 @@ public:
 
 	// Access internal PhysicsWorld implementation.
 	PhysicsWorld& Impl() { return m_world; }
+	// Inspect the internal world without modifying it.
 	const PhysicsWorld& Impl() const { return m_world; }
 
 private:

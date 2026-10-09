@@ -13,6 +13,17 @@
         "CMAKE_MAKE_PROGRAM": "D:/Qt/Tools/Ninja/ninja.exe",
         "BUILD_TESTING": "ON"
       }
+    },
+    {
+      "name": "release-o3",
+      "displayName": "MinGW Release -O3 (Ninja)",
+      "inherits": "mingw-debug",
+      "binaryDir": "${sourceDir}/Build-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "CMAKE_C_FLAGS_RELEASE": "-O3 -DNDEBUG"
+      }
     }
   ],
   "buildPresets": [
@@ -20,12 +31,24 @@
       "name": "mingw-debug",
       "configurePreset": "mingw-debug",
       "jobs": 4
+    },
+    {
+      "name": "release-o3",
+      "configurePreset": "release-o3",
+      "jobs": 4
     }
   ],
   "testPresets": [
     {
       "name": "mingw-debug",
       "configurePreset": "mingw-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release-o3",
+      "configurePreset": "release-o3",
       "output": {
         "outputOnFailure": true
       }

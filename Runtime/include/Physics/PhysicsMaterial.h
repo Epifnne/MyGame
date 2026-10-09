@@ -6,13 +6,14 @@
 namespace Runtime {
 namespace Physics {
 
+// Contact friction/restitution coefficients with geometric friction and averaged restitution blending.
 struct PhysicsMaterial {
 	// Coulomb friction coefficients and restitution.
 	float staticFriction = 0.6f;
 	float dynamicFriction = 0.5f;
 	float restitution = 0.1f;
 
-	// Blend two materials into one effective contact material.
+	// Blend each friction as sqrt(max(0, muA*muB)); restitution = clamp((eA+eB)/2, 0, 1).
 	static PhysicsMaterial Combine(const PhysicsMaterial& a, const PhysicsMaterial& b) {
 		PhysicsMaterial result;
 		result.staticFriction = std::sqrt(std::max(0.0f, a.staticFriction * b.staticFriction));
@@ -21,13 +22,13 @@ struct PhysicsMaterial {
 		return result;
 	}
 
-	// Value comparison used by the midphase sync because the mutable Material()
-	// accessor cannot bump the collider revision (frozen invalidation matrix).
+	// Compare all three float coefficients exactly for material-change detection.
 	bool operator==(const PhysicsMaterial& other) const {
 		return staticFriction == other.staticFriction &&
 			dynamicFriction == other.dynamicFriction &&
 			restitution == other.restitution;
 	}
+	// Return the negation of exact coefficient equality.
 	bool operator!=(const PhysicsMaterial& other) const { return !(*this == other); }
 };
 

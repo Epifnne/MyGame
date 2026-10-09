@@ -62,11 +62,12 @@ Layering rules:
 ### Physics
 - Deterministic fixed-step simulation pipeline: integration → broad phase → midphase → narrow phase → island-based impulse solving, stepped via `PhysicsSystem` (ECS writeback is not wired up yet).
 - **Broad phase**: dynamic BVH (fat AABBs, incremental insert/remove, refit with reinsert-on-move) with separate static/dynamic trees.
-- **Midphase**: persistent pair pool with generational handles, cached contact manifolds with local-anchor matching and accumulated-impulse warm-start caches, Enter/Stay/Exit contact events.
-- **Narrow phase**: GJK + EPA contact generation with up to 4-point manifolds, parallelized across worker threads via a shared `JobSystem`; independent physics islands are solved in parallel.
+- **Midphase**: persistent pair pool with generational handles, generation-relative contact reuse, 1 cm local-anchor matching and normal/tangent/spin impulse caches, Enter/Stay/Exit contact events. Sleeping contact pairs are retained outside active queries.
+- **Narrow phase**: analytic sphere queries and 15-axis box SAT, with GJK + EPA for other convex pairs; clipped surface-witness patches contain up to 4 points and report contact topology. Queries are parallelized through a shared `JobSystem`; independent physics islands are solved in parallel.
 - Rigid body dynamics: mass, inertia tensor, quaternion orientation, force/torque accumulation, semi-implicit Euler integration.
-- Contact solver: accumulated normal/friction impulses with friction-disc clamping, warm starting, position correction, one-sided contact normal redirection (static friction is stored but not yet used by the solver).
-- **Continuous collision detection**: sampled TOI search with bisection refinement and sub-stepping to prevent tunneling.
+- Contact solver: accumulated normal impulses, manifold-centroid tangent/spin friction, surface-anchor position correction, force-compensated restitution, and one-sided contact normal redirection (static friction is stored but not yet used by the solver). TOI substeps do not reapply impulses already applied in the same fixed step.
+- **Continuous collision detection**: swept-BVH candidate search and conservative advancement with rotational bounds, followed by TOI substeps. CCD motion thresholds are independent of speculative contact distance.
+- **Island sleep**: enabled by default, using windowed center/orientation-probe displacement and contact activity. External forces, impulses, pose/collider changes, support removal, and confirmed collisions wake affected islands; sleep can be disabled for comparison.
 - Physical materials (friction, restitution, combine rules), triggers, and layer/mask collision filtering.
 - Spatial queries: AABB raycast; shape sweep and overlap queries are not implemented yet.
 - Constraint abstraction exists as a minimal interface; concrete joint/distance/spring constraints are not implemented yet.
@@ -113,23 +114,27 @@ Layering rules:
 
 ## Building (Windows)
 
-The repo uses the Ninja generator with a fixed `Build` directory. The local preset uses Qt MinGW 13.1 with the CMake and Ninja shipped with Qt.
+The repo uses Ninja and Qt MinGW 13.1. Use `release-o3` for samples and performance
+validation (`Build-release`, `-O3 -DNDEBUG`); `mingw-debug` uses `Build` for debugging.
 
 ```powershell
 Set-Location E:\MyGame
-cmake --preset mingw-debug
-cmake --build --preset mingw-debug
-ctest --preset mingw-debug
+cmake --preset release-o3
+cmake --build --preset release-o3
+ctest --preset release-o3
 ```
 
 Build or test a single target:
 
 ```powershell
-cmake --build --preset mingw-debug --target Physics_Test
-ctest --preset mingw-debug -R Physics
+cmake --build --preset release-o3 --target Physics_Test
+ctest --preset release-o3 -R "Physics|SleepTest|StackPipelineTest"
 ```
 
-Do not switch generators inside an existing `Build` directory. If the old cache came from Visual Studio, NMake, or MinGW Makefiles, delete `Build/CMakeCache.txt` and `Build/CMakeFiles` before configuring with the preset.
+Do not switch generators inside an existing build directory. Reconfigure in a
+fresh directory if its cache was created with another generator. Both presets
+write executables to `MyGame/`, so the most recently linked configuration replaces
+the corresponding executable there.
 
 CI and Release builds also use Ninja with platform-default compilers: GCC on Linux, MSVC on Windows.
 
@@ -138,11 +143,53 @@ CI and Release builds also use Ninja with platform-default compilers: GCC on Lin
 - Unit and integration tests per module under `Tests/` (GoogleTest), wired into CTest.
 - Physics performance benchmarks under `Benchmark/`, with JSON baselines for regression comparison.
 - Runnable samples under `Sample/` and a local TCP server demo under `Tools/`.
+- Sleep, wake-up, physical contact-witness, non-face stacking, CCD, and worker-count determinism regressions are included in `Physics_Test`.
+- Benchmark schema version 2 includes SAT/primitive query counters and awake/sleeping body counts; see [Benchmark/README.md](Benchmark/README.md) for scenarios, flags, and acceptance commands.
+
+Each sample has its own directory and `CMakeLists.txt`: `MetalCube`,
+`PhysicsCollision`, `BoxStack`, `JoltBoxFill`, and `FieldRainBenchmark`.
+Rendering samples keep their GLSL sources in a `shaders/` subdirectory; CMake
+embeds them in the executable and automatically regenerates the embedded source
+when a shader changes. `FieldRainBenchmark` is headless and has no shaders.
+Target names and executable output locations remain unchanged.
+
+| Target | Sources | Purpose |
+| --- | --- | --- |
+| `MetalCubeSample` | [MetalCube](Sample/MetalCube/) | Rotating PBR metal cube; Space pauses/resumes, Esc quits. |
+| `PhysicsCollisionSample` | [PhysicsCollision](Sample/PhysicsCollision/) | Mixed regular Platonic convex-hull rain; `--verify` runs headless validation, with optional `--ccd` and `--no-sleep`. |
+| `BoxStackSample` | [BoxStack](Sample/BoxStack/) | Field rain, five-box tower, four supports, and edge cradle; keys 1-4 select scenes and S toggles sleep. |
+| `FieldRainBenchmark` | [FieldRainBenchmark](Sample/FieldRainBenchmark/) | Headless rain quality/timing checks; `default 7200` runs 7200 steps, `0` as the first argument disables restitution. |
+| `JoltBoxFillSample` | [JoltBoxFill](Sample/JoltBoxFill/) | Jolt comparison; `--headless --steps 7200` runs without a window. Available only when local Jolt sources exist under `Build/_deps/jolt-src`. |
+
+Build the Runtime-only samples:
+
+```powershell
+cmake --build --preset release-o3 --target MetalCubeSample PhysicsCollisionSample BoxStackSample FieldRainBenchmark
+```
+
+### Rotating Metal Cube Sample
+
+The rotating metal cube has moved out of the main game into `MetalCubeSample`.
+It links only to Runtime and embeds `Sample/MetalCube/shaders` at configure time,
+so it needs no external assets or particular working directory. The main game
+retains its ground, bouncing ball, UI, and networking demos.
+The main game's ball and ground reuse these shaders, which are copied into its
+runtime assets and included when installing the main game.
+
+```powershell
+cmake --build --preset release-o3 --target MetalCubeSample
+.\MyGame\MetalCubeSample.exe
+.\MyGame\MetalCubeSample.exe --smoke-test
+```
+
+Press Space to pause/resume rotation and Esc to quit. The smoke test renders two
+different orientations, checks that the frames differ without an OpenGL error,
+and exits with a nonzero code on failure. It requires an OpenGL-capable display.
 
 ## Documentation
 
 - [Architecture (Chinese)](Docs/Architecture.md) — module responsibilities and layering contracts
 - [Improvement Plan (Chinese)](Docs/ImprovementPlan.md) — known gaps and optimization directions from the 2026-09 code review
-- [Physics Collision Optimization Plan](Docs/PhysicsCollisionOptimizationPlan.md)
-- [Physics Debug Notes](Docs/physicsdebug.md)
-- [CI Debug Playbook](Docs/CI_DEBUG_PLAYBOOK.md)
+- [Callback Optimization Notes (Chinese)](Docs/defunction-callback-optimization.md) — hot-path callback inlining and benchmark comparisons
+- [Physics Benchmark Guide](Benchmark/README.md) — scenarios, telemetry, and Release stacking validation
+- [Changelog](CHANGELOG.md) — project changes, including the retired staged physics notes

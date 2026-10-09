@@ -6,12 +6,11 @@
 namespace Runtime {
 namespace Physics {
 
+// Choose the least-aligned world axis; for unit n, t1 = normalize(n cross axis), t2 = n cross t1.
 void BuildContactTangentBasis(
     const glm::vec3& normal,
     glm::vec3& outTangent1,
     glm::vec3& outTangent2) {
-    // Pick the world axis least aligned with the normal for a stable,
-    // deterministic orthonormal basis.
     const glm::vec3 axis =
         (std::abs(normal.x) <= std::abs(normal.y) && std::abs(normal.x) <= std::abs(normal.z))
             ? glm::vec3(1.0f, 0.0f, 0.0f)
@@ -21,13 +20,15 @@ void BuildContactTangentBasis(
     outTangent2 = glm::cross(normal, outTangent1);
 }
 
+// Greedily match new anchors to unused old anchors by |dA|^2 + |dB|^2 < 0.01^2; ties favor old order.
+// Transfer impulse/basis/dt only; incompatible normals and unmatched points leave new data unchanged.
 void MatchPersistentContactPoints(
     const ContactManifold& oldManifold,
     ContactManifold& newManifold) {
     if (oldManifold.pointCount == 0 || newManifold.pointCount == 0) {
         return;
     }
-    // A significant normal flip invalidates the impulse caches entirely.
+    // Incompatible normals suppress transfer; this function does not clear existing new caches.
     if (glm::dot(oldManifold.normal, newManifold.normal) < kContactNormalCacheMinDot) {
         return;
     }
@@ -35,9 +36,7 @@ void MatchPersistentContactPoints(
     const float maxDistanceSq = kContactAnchorMatchDistance * kContactAnchorMatchDistance;
     std::array<bool, ContactManifold::kMaxContactPoints> matched{};
 
-    // Deterministic one-to-one matching: each new point claims the closest
-    // unmatched old point by two-sided local anchor distance; exact ties keep
-    // the lowest old index (strict < never replaces an equal best).
+    // The strict best-distance comparison also excludes points exactly at the threshold.
     for (std::size_t newIndex = 0; newIndex < newManifold.pointCount; ++newIndex) {
         ContactPoint& newPoint = newManifold.Point(newIndex);
         float bestDistanceSq = maxDistanceSq;
@@ -62,14 +61,11 @@ void MatchPersistentContactPoints(
         const ContactPoint& oldPoint = oldManifold.Point(bestOldIndex);
         newPoint.accumulatedNormalImpulse = oldPoint.accumulatedNormalImpulse;
         newPoint.accumulatedTangentImpulse = oldPoint.accumulatedTangentImpulse;
-        // The cache interpretation data travels with the cache: the tangent
-        // impulse stays expressed in the basis it was accumulated under until
-        // Prepare reprojects it, cachedDt drives the dtNew/cachedDt scaling
-        // and the TOI origin flag suppresses warm start replay of impacts.
+        newPoint.accumulatedSpinImpulse = oldPoint.accumulatedSpinImpulse;
+        // Preserve the old basis and dt so Prepare can reproject and rescale the impulse.
         newPoint.cachedTangent1 = oldPoint.cachedTangent1;
         newPoint.cachedTangent2 = oldPoint.cachedTangent2;
         newPoint.cachedDt = oldPoint.cachedDt;
-        newPoint.cacheFromToiImpact = oldPoint.isToiImpact;
     }
 }
 

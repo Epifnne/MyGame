@@ -1,0 +1,7 @@
+#pragma once
+
+namespace Sample {
+
+inline constexpr char @SHADER_SYMBOL@[] = R"glsl(@SHADER_SOURCE@)glsl";
+
+} // namespace Sample

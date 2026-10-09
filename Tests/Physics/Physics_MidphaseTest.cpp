@@ -252,7 +252,7 @@ TEST(MidphaseTest, PairLifecycleNewPersistingRemovedWithSlotReuse) {
         scene.colliders.at(box), scene.bodies.at(box));
     ASSERT_NE(midphase.FindPair(key), nullptr);
     EXPECT_EQ(midphase.FindPair(key)->state, PairLifecycleState::New);
-    midphase.FinishQuery(events);
+    midphase.FinishQuery(scene.bodies, scene.colliders, events);
     EXPECT_TRUE(events.empty());
     EXPECT_EQ(midphase.ActivePairCount(), 1u);
 
@@ -262,12 +262,12 @@ TEST(MidphaseTest, PairLifecycleNewPersistingRemovedWithSlotReuse) {
         scene.colliders.at(box), scene.bodies.at(box));
     EXPECT_EQ(slot2, slot1);
     EXPECT_EQ(midphase.FindPair(key)->state, PairLifecycleState::Persisting);
-    midphase.FinishQuery(events);
+    midphase.FinishQuery(scene.bodies, scene.colliders, events);
 
     // Not returned by a FullScene query: candidate removed. The pair never
     // touched, so no Exit is published.
     midphase.BeginQuery(3, 2, BroadPhaseQueryCoverage::FullScene);
-    midphase.FinishQuery(events);
+    midphase.FinishQuery(scene.bodies, scene.colliders, events);
     EXPECT_TRUE(events.empty());
     EXPECT_EQ(midphase.LastStats().removedPairCount, 1u);
     EXPECT_EQ(midphase.ActivePairCount(), 0u);
@@ -281,7 +281,7 @@ TEST(MidphaseTest, PairLifecycleNewPersistingRemovedWithSlotReuse) {
         scene.colliders.at(box), scene.bodies.at(box));
     EXPECT_EQ(slot3, slot1);
     EXPECT_EQ(midphase.FindPair(key)->state, PairLifecycleState::New);
-    midphase.FinishQuery(events);
+    midphase.FinishQuery(scene.bodies, scene.colliders, events);
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +295,7 @@ TEST(MidphaseDetectorTest, ImpulseCachesTransferAcrossFramesByAnchorMatching) {
 
     CollisionDetector detector;
     const CollisionDetectionResult& result1 =
-        detector.Detect(scene.colliders, scene.bodies, 1, 1, kFixedDt, false);
+        detector.Detect(scene.colliders, scene.bodies, 1, 1, kFixedDt);
     ASSERT_EQ(result1.touchingPairs.size(), 1u);
     ASSERT_EQ(CountEvents(result1.events, ContactEventType::Enter), 1u);
 
@@ -310,7 +310,7 @@ TEST(MidphaseDetectorTest, ImpulseCachesTransferAcrossFramesByAnchorMatching) {
         scene.bodies.at(box).Position() + glm::vec3(0.01f, 0.0f, 0.0f));
 
     const CollisionDetectionResult& result2 =
-        detector.Detect(scene.colliders, scene.bodies, 2, 2, kFixedDt, false);
+        detector.Detect(scene.colliders, scene.bodies, 2, 2, kFixedDt);
     ASSERT_EQ(result2.touchingPairs.size(), 1u);
     EXPECT_EQ(CountEvents(result2.events, ContactEventType::Enter), 0u);
     EXPECT_EQ(CountEvents(result2.events, ContactEventType::Stay), 1u);
@@ -327,7 +327,6 @@ TEST(MidphaseDetectorTest, ImpulseCachesTransferAcrossFramesByAnchorMatching) {
         // Interpretation data is transferred with the cache (the solver
         // re-stamps the fresh basis/dt when it stores the solved cache).
         EXPECT_FLOAT_EQ(point.cachedDt, kFixedDt);
-        EXPECT_FALSE(point.isToiImpact);
         EXPECT_GT(glm::length(point.cachedTangent1), 0.5f);
     }
 }
@@ -339,7 +338,7 @@ TEST(MidphaseDetectorTest, ExternalTeleportClearsImpulseCaches) {
 
     CollisionDetector detector;
     const CollisionDetectionResult& result1 =
-        detector.Detect(scene.colliders, scene.bodies, 1, 1, kFixedDt, false);
+        detector.Detect(scene.colliders, scene.bodies, 1, 1, kFixedDt);
     ASSERT_EQ(result1.touchingPairs.size(), 1u);
     SeedContactCaches(detector.GetMidphase().PairAt(result1.touchingPairs.front()), 3.25f);
 
@@ -349,7 +348,7 @@ TEST(MidphaseDetectorTest, ExternalTeleportClearsImpulseCaches) {
         scene.bodies.at(box).Position() + glm::vec3(0.02f, 0.0f, 0.0f));
 
     const CollisionDetectionResult& result2 =
-        detector.Detect(scene.colliders, scene.bodies, 2, 2, kFixedDt, false);
+        detector.Detect(scene.colliders, scene.bodies, 2, 2, kFixedDt);
     ASSERT_EQ(result2.touchingPairs.size(), 1u);
     ExpectCachesCleared(detector.GetMidphase().PairAt(result2.touchingPairs.front()));
 }
@@ -361,7 +360,7 @@ TEST(MidphaseDetectorTest, ColliderReplacementClearsImpulseCaches) {
 
     CollisionDetector detector;
     const CollisionDetectionResult& result1 =
-        detector.Detect(scene.colliders, scene.bodies, 1, 1, kFixedDt, false);
+        detector.Detect(scene.colliders, scene.bodies, 1, 1, kFixedDt);
     ASSERT_EQ(result1.touchingPairs.size(), 1u);
     SeedContactCaches(detector.GetMidphase().PairAt(result1.touchingPairs.front()), 3.25f);
 
@@ -369,7 +368,7 @@ TEST(MidphaseDetectorTest, ColliderReplacementClearsImpulseCaches) {
     scene.ReplaceCollider(box, {0.5f, 0.5f, 0.5f});
 
     const CollisionDetectionResult& result2 =
-        detector.Detect(scene.colliders, scene.bodies, 2, 2, kFixedDt, false);
+        detector.Detect(scene.colliders, scene.bodies, 2, 2, kFixedDt);
     ASSERT_EQ(result2.touchingPairs.size(), 1u);
     ExpectCachesCleared(detector.GetMidphase().PairAt(result2.touchingPairs.front()));
 }
@@ -381,7 +380,7 @@ TEST(MidphaseDetectorTest, MaterialValueChangeClearsImpulseCaches) {
 
     CollisionDetector detector;
     const CollisionDetectionResult& result1 =
-        detector.Detect(scene.colliders, scene.bodies, 1, 1, kFixedDt, false);
+        detector.Detect(scene.colliders, scene.bodies, 1, 1, kFixedDt);
     ASSERT_EQ(result1.touchingPairs.size(), 1u);
     SeedContactCaches(detector.GetMidphase().PairAt(result1.touchingPairs.front()), 3.25f);
 
@@ -390,7 +389,7 @@ TEST(MidphaseDetectorTest, MaterialValueChangeClearsImpulseCaches) {
     scene.colliders.at(box).Material().restitution = 0.9f;
 
     const CollisionDetectionResult& result2 =
-        detector.Detect(scene.colliders, scene.bodies, 2, 2, kFixedDt, false);
+        detector.Detect(scene.colliders, scene.bodies, 2, 2, kFixedDt);
     ASSERT_EQ(result2.touchingPairs.size(), 1u);
     ExpectCachesCleared(detector.GetMidphase().PairAt(result2.touchingPairs.front()));
 }
@@ -403,7 +402,7 @@ TEST(MidphaseDetectorTest, SeparationKeepsCandidatePairAndPublishesExit) {
 
     CollisionDetector detector;
     const CollisionDetectionResult& result1 =
-        detector.Detect(scene.colliders, scene.bodies, 1, 1, kFixedDt, false);
+        detector.Detect(scene.colliders, scene.bodies, 1, 1, kFixedDt);
     ASSERT_EQ(result1.touchingPairs.size(), 1u);
 
     // Lift the box so the shapes separate by 0.02: inside the fat AABB margin
@@ -412,7 +411,7 @@ TEST(MidphaseDetectorTest, SeparationKeepsCandidatePairAndPublishesExit) {
         scene.bodies.at(box).Position() + glm::vec3(0.0f, 0.27f, 0.0f));
 
     const CollisionDetectionResult& result2 =
-        detector.Detect(scene.colliders, scene.bodies, 2, 2, kFixedDt, false);
+        detector.Detect(scene.colliders, scene.bodies, 2, 2, kFixedDt);
     EXPECT_TRUE(result2.touchingPairs.empty());
     EXPECT_EQ(CountEvents(result2.events, ContactEventType::Exit), 1u);
 
@@ -427,9 +426,47 @@ TEST(MidphaseDetectorTest, SeparationKeepsCandidatePairAndPublishesExit) {
     scene.bodies.at(box).SetPositionInternal(
         scene.bodies.at(box).Position() + glm::vec3(0.0f, 5.0f, 0.0f));
     const CollisionDetectionResult& result3 =
-        detector.Detect(scene.colliders, scene.bodies, 3, 3, kFixedDt, false);
+        detector.Detect(scene.colliders, scene.bodies, 3, 3, kFixedDt);
     EXPECT_EQ(CountEvents(result3.events, ContactEventType::Exit), 0u);
     EXPECT_EQ(detector.GetMidphase().FindPair(key), nullptr);
+}
+
+TEST(MidphaseDetectorTest, ReusesStationaryManifoldButQueriesAfterMovement) {
+    DetectorScene scene;
+    scene.AddBox({0.0f, 0.0f, 0.0f}, {5.0f, 0.5f, 5.0f}, true);
+    const uint32_t box = scene.AddBox({0.0f, 0.75f, 0.0f}, {0.5f, 0.5f, 0.5f}, false);
+    CollisionDetector detector;
+
+    ASSERT_EQ(detector.Detect(scene.colliders, scene.bodies, 1, 1, kFixedDt).touchingPairs.size(), 1u);
+    EXPECT_GT(detector.LastStats().satCallCount, 0u);
+
+    const CollisionDetectionResult& reused =
+        detector.Detect(scene.colliders, scene.bodies, 2, 2, kFixedDt);
+    ASSERT_EQ(reused.touchingPairs.size(), 1u);
+    EXPECT_EQ(CountEvents(reused.events, ContactEventType::Stay), 1u);
+    EXPECT_EQ(detector.LastStats().satCallCount, 0u);
+    EXPECT_GT(detector.GetMidphase().PairAt(reused.touchingPairs.front()).manifold.pointCount, 0u);
+
+    // Reuse tolerance is the speculative band (2 cm) plus a margin; a 4 cm
+    // move exceeds it and must trigger a fresh narrow-phase query.
+    scene.bodies.at(box).SetPositionInternal(scene.bodies.at(box).Position() + glm::vec3(0.04f, 0.0f, 0.0f));
+    ASSERT_EQ(detector.Detect(scene.colliders, scene.bodies, 3, 3, kFixedDt).touchingPairs.size(), 1u);
+    EXPECT_GT(detector.LastStats().satCallCount, 0u);
+}
+
+// Small incremental moves must eventually invalidate the original geometry, not reset its age.
+TEST(MidphaseDetectorTest, ReuseMeasuresCumulativePoseChangeSinceGeneration) {
+    DetectorScene scene;
+    scene.AddBox({0.0f, 0.0f, 0.0f}, {5.0f, 0.5f, 5.0f}, true);
+    const uint32_t box = scene.AddBox({0.0f, 0.75f, 0.0f}, {0.5f, 0.5f, 0.5f}, false);
+    CollisionDetector detector;
+    ASSERT_EQ(detector.Detect(scene.colliders, scene.bodies, 1, 1, kFixedDt).touchingPairs.size(), 1u);
+    for (uint64_t step = 1; step <= 3; ++step) {
+        scene.bodies.at(box).SetPositionInternal({0.0004f * static_cast<float>(step), 0.75f, 0.0f});
+        ASSERT_EQ(detector.Detect(scene.colliders, scene.bodies, step + 1, step + 1, kFixedDt).touchingPairs.size(), 1u);
+        if (step < 3) EXPECT_EQ(detector.LastStats().satCallCount, 0u);
+        else EXPECT_GT(detector.LastStats().satCallCount, 0u);
+    }
 }
 
 TEST(MidphaseDetectorTest, EnterThenExitWithinOneFixedStepIsNotSwallowed) {
@@ -438,11 +475,11 @@ TEST(MidphaseDetectorTest, EnterThenExitWithinOneFixedStepIsNotSwallowed) {
     const uint32_t box = scene.AddBox({0.0f, 0.75f, 0.0f}, {0.5f, 0.5f, 0.5f}, false, true);
 
     CollisionDetector detector;
-    // Simulates a CCD fixed step: a TOI sub-step touches, a later sub-step of
-    // the same fixed step separates. Both events must survive.
+    // Simulates a CCD fixed step: a mid-window sub-step touches, a later
+    // sub-step of the same fixed step separates. Both events must survive.
     constexpr uint64_t fixedStepId = 7;
     const CollisionDetectionResult& result1 =
-        detector.Detect(scene.colliders, scene.bodies, fixedStepId, 1, kFixedDt * 0.25f, true);
+        detector.Detect(scene.colliders, scene.bodies, fixedStepId, 1, kFixedDt * 0.25f);
     ASSERT_EQ(result1.touchingPairs.size(), 1u);
     ASSERT_EQ(result1.events.size(), 1u);
     EXPECT_EQ(result1.events.front().type, ContactEventType::Enter);
@@ -452,7 +489,7 @@ TEST(MidphaseDetectorTest, EnterThenExitWithinOneFixedStepIsNotSwallowed) {
     scene.bodies.at(box).SetPositionInternal(
         scene.bodies.at(box).Position() + glm::vec3(0.0f, 5.0f, 0.0f));
     const CollisionDetectionResult& result2 =
-        detector.Detect(scene.colliders, scene.bodies, fixedStepId, 2, kFixedDt * 0.75f, false);
+        detector.Detect(scene.colliders, scene.bodies, fixedStepId, 2, kFixedDt * 0.75f);
     ASSERT_EQ(result2.events.size(), 1u);
     EXPECT_EQ(result2.events.front().type, ContactEventType::Exit);
     EXPECT_EQ(result2.events.front().fixedStepId, fixedStepId);
@@ -577,6 +614,9 @@ TEST(MidphaseWorldTest, SteadyStatePairPoolStopsAllocating) {
     PhysicsWorld world;
     world.SetGravity(glm::vec3(0.0f, -9.81f, 0.0f));
     world.SetContinuousCollisionEnabled(false);
+    // This test verifies the steady-state pair pool, not sleep: keep the box
+    // awake so its pair keeps registering every query (Phase 9).
+    world.SetSleepEnabled(false);
 
     RigidBodyDesc groundDesc;
     groundDesc.isStatic = true;
@@ -659,20 +699,20 @@ TEST(MidphaseWorldTest, NormalImpulseIsSubstepAccumulatedAndTriggerStaysZero) {
         const PairKey key = MakePairKey(contact.bodyA, contact.bodyB);
         if (key == MakePairKey(groundId, boxId)) {
             checkedSolid = true;
-            EXPECT_GT(contact.point.normalImpulse, 0.0f);
+            EXPECT_GT(contact.Point(0).normalImpulse, 0.0f);
             // After solving, the persistent cache mirrors the sub-step
             // accumulated value (Phase 2: no warm start yet).
-            EXPECT_FLOAT_EQ(contact.point.normalImpulse, contact.point.accumulatedNormalImpulse);
+            EXPECT_FLOAT_EQ(contact.Point(0).normalImpulse, contact.Point(0).accumulatedNormalImpulse);
         }
         if (key == MakePairKey(groundId2, triggerId)) {
             checkedTrigger = true;
             EXPECT_TRUE(contact.isTrigger);
             // Trigger contacts never carry impulses, including the fixed-step
             // total summary fields.
-            EXPECT_FLOAT_EQ(contact.point.normalImpulse, 0.0f);
-            EXPECT_FLOAT_EQ(contact.point.accumulatedNormalImpulse, 0.0f);
-            EXPECT_FLOAT_EQ(contact.point.accumulatedTangentImpulse.x, 0.0f);
-            EXPECT_FLOAT_EQ(contact.point.accumulatedTangentImpulse.y, 0.0f);
+            EXPECT_FLOAT_EQ(contact.Point(0).normalImpulse, 0.0f);
+            EXPECT_FLOAT_EQ(contact.Point(0).accumulatedNormalImpulse, 0.0f);
+            EXPECT_FLOAT_EQ(contact.Point(0).accumulatedTangentImpulse.x, 0.0f);
+            EXPECT_FLOAT_EQ(contact.Point(0).accumulatedTangentImpulse.y, 0.0f);
             EXPECT_FLOAT_EQ(contact.fixedStepNormalImpulse, 0.0f);
             EXPECT_FLOAT_EQ(glm::length(contact.fixedStepTangentImpulse), 0.0f);
         }
@@ -790,5 +830,5 @@ TEST(MidphaseWorldTest, CcdTriggerEnterAndExitInsideSingleFixedStep) {
     ASSERT_EQ(world.Contacts().size(), 1u);
     EXPECT_EQ(MakePairKey(world.Contacts().front().bodyA, world.Contacts().front().bodyB), key);
     EXPECT_TRUE(world.Contacts().front().isTrigger);
-    EXPECT_FLOAT_EQ(world.Contacts().front().point.normalImpulse, 0.0f);
+    EXPECT_FLOAT_EQ(world.Contacts().front().Point(0).normalImpulse, 0.0f);
 }

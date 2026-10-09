@@ -164,7 +164,6 @@ TEST(RigidBodyAngularStateTest, StaticBodiesKeepZeroInverseInertiaCache) {
 
 TEST(RigidBodyAngularStateTest, CcdInterpolatedCopyRefreshesCache) {
     const RigidBody source = MakeDynamicBody();
-
     // Mirror ContinuousCollisionDetector::GenerateContactAtTime: copy the body
     // and teleport the copy to the interpolated transform. The copy must not
     // reuse the source pose's cached inverse inertia.
@@ -223,4 +222,51 @@ TEST(RigidBodyAngularStateTest, FreeRotationConservesMomentumAndBoundsEnergyDrif
     // dt = 1/120 over 5 simulated seconds of non-uniform free rotation
     // (first-order semi-implicit orientation integration); bound set to 5e-2.
     EXPECT_LT(maxRelativeEnergyDrift, 5e-2f);
+}
+
+// Phase 9: the velocity-only compensation used when a sleeping body is woken
+// by a confirmed contact applies exactly one dt of force/gravity and torque
+// increments and never moves the pose.
+TEST(RigidBodySleepTest, IntegrateVelocityCompensatesExactlyOnce) {
+    RigidBodyDesc desc;
+    desc.mass = 2.0f;
+    desc.inertiaTensorDiagonal = glm::vec3(1.0f);
+    RigidBody body(desc);
+    const glm::vec3 initialPosition = body.Position();
+    const glm::quat initialOrientation = body.Orientation();
+
+    body.ApplyForce(glm::vec3(4.0f, 0.0f, 0.0f));
+    body.ApplyTorque(glm::vec3(0.0f, 0.0f, 3.0f));
+    body.IntegrateVelocity(0.5f, glm::vec3(0.0f, -10.0f, 0.0f));
+
+    // v += (F / m + g) * dt = ((2,0,0) + (0,-10,0)) * 0.5 = (1, -5, 0).
+    ExpectVec3Near(body.LinearVelocity(), glm::vec3(1.0f, -5.0f, 0.0f), 1e-6f);
+    // L += torque * dt = (0,0,1.5); identity inertia/orientation -> omega = L.
+    ExpectVec3Near(body.AngularMomentum(), glm::vec3(0.0f, 0.0f, 1.5f), 1e-6f);
+    ExpectVec3Near(body.AngularVelocity(), glm::vec3(0.0f, 0.0f, 1.5f), 1e-6f);
+    // Velocity-only: the pose must not move.
+    ExpectVec3Near(body.Position(), initialPosition, 0.0f);
+    EXPECT_EQ(body.Orientation(), initialOrientation);
+}
+
+// Phase 9: sleep transitions zero the residual motion state consistently and
+// never apply to static bodies.
+TEST(RigidBodySleepTest, EnterSleepZeroesMotionStateAndStaticNeverSleeps) {
+    RigidBody body = MakeDynamicBody();
+    body.EnterSleep();
+    EXPECT_TRUE(body.IsSleeping());
+    ExpectVec3Near(body.LinearVelocity(), glm::vec3(0.0f), 0.0f);
+    ExpectVec3Near(body.AngularVelocity(), glm::vec3(0.0f), 0.0f);
+    ExpectVec3Near(body.AngularMomentum(), glm::vec3(0.0f), 0.0f);
+
+    body.WakeUp();
+    EXPECT_FALSE(body.IsSleeping());
+    EXPECT_EQ(body.GetSleepState(), Runtime::Physics::SleepState::Awake);
+    EXPECT_EQ(body.SleepTimer(), 0.0f);
+
+    RigidBodyDesc staticDesc;
+    staticDesc.isStatic = true;
+    RigidBody staticBody(staticDesc);
+    staticBody.EnterSleep();
+    EXPECT_FALSE(staticBody.IsSleeping());
 }

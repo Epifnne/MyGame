@@ -5,6 +5,7 @@ namespace Physics {
 
 namespace {
 
+// Inclusive containment requires outer.min <= inner.min and outer.max >= inner.max per axis.
 bool AabbContains(const AABB& outer, const AABB& inner) {
     return outer.min.x <= inner.min.x && outer.min.y <= inner.min.y && outer.min.z <= inner.min.z &&
            outer.max.x >= inner.max.x && outer.max.y >= inner.max.y && outer.max.z >= inner.max.z;
@@ -12,6 +13,7 @@ bool AabbContains(const AABB& outer, const AABB& inner) {
 
 } // namespace
 
+// Reset and activate a recycled slot, or append one to the pool.
 int BvhTree::AllocateNode() {
     if (!m_freeNodes.empty()) {
         const int reused = m_freeNodes.back();
@@ -26,6 +28,7 @@ int BvhTree::AllocateNode() {
     return static_cast<int>(m_nodes.size()) - 1;
 }
 
+// Ignore invalid/inactive indices; otherwise reset and recycle the node.
 void BvhTree::ReleaseNode(int node) {
     if (node < 0 || node >= static_cast<int>(m_nodes.size())) {
         return;
@@ -39,6 +42,7 @@ void BvhTree::ReleaseNode(int node) {
     m_freeNodes.push_back(node);
 }
 
+// Refit contained leaves when growth=(newArea-oldArea)/oldArea is allowed; otherwise reinsert.
 void BvhTree::UpsertLeaf(uint32_t bodyId, const AABB& tightAabb) {
     const AABB fat = tightAabb.Expanded(m_fatMargin);
 
@@ -81,14 +85,14 @@ void BvhTree::UpsertLeaf(uint32_t bodyId, const AABB& tightAabb) {
     m_nodes[leaf].bodyId = bodyId;
     InsertLeaf(leaf);
 
-    // Chaos accounting: a remove + reinsert degrades the tree; too many since
-    // the last rebuild triggers a full quality rebuild.
+    // Count reinsertions and rebuild when the configured nonzero limit is reached.
     ++m_updatesSinceRebuild;
     if (m_rebuildUpdateThreshold > 0 && m_updatesSinceRebuild >= m_rebuildUpdateThreshold) {
         Rebuild();
     }
 }
 
+// Detach and recycle the mapped leaf, then erase its body binding.
 void BvhTree::RemoveLeaf(uint32_t bodyId) {
     const auto leafIt = m_bodyToLeaf.find(bodyId);
     if (leafIt == m_bodyToLeaf.end()) {
@@ -100,10 +104,12 @@ void BvhTree::RemoveLeaf(uint32_t bodyId) {
     m_bodyToLeaf.erase(leafIt);
 }
 
+// Membership is determined by the body-to-leaf map.
 bool BvhTree::Contains(uint32_t bodyId) const {
     return m_bodyToLeaf.find(bodyId) != m_bodyToLeaf.end();
 }
 
+// Copy map keys in unspecified hash iteration order.
 std::vector<uint32_t> BvhTree::CollectBodyIds() const {
     std::vector<uint32_t> ids;
     ids.reserve(m_bodyToLeaf.size());
@@ -113,6 +119,7 @@ std::vector<uint32_t> BvhTree::CollectBodyIds() const {
     return ids;
 }
 
+// Choose a sibling by delta surface area, allocate their parent, and refit ancestors.
 void BvhTree::InsertLeaf(int leaf) {
     if (leaf < 0 || leaf >= static_cast<int>(m_nodes.size()) || !m_nodes[leaf].active) {
         return;
@@ -166,6 +173,7 @@ void BvhTree::InsertLeaf(int leaf) {
     FixUpwardTree(newParent);
 }
 
+// Promote the sibling and recycle the parent, leaving the leaf allocated but detached.
 void BvhTree::RemoveLeafNode(int leaf) {
     if (leaf < 0 || leaf >= static_cast<int>(m_nodes.size()) || !m_nodes[leaf].active) {
         return;
@@ -209,6 +217,7 @@ void BvhTree::RemoveLeafNode(int leaf) {
     ReleaseNode(parent);
 }
 
+// Replace each valid ancestor bound by the union of its two children.
 void BvhTree::FixUpwardTree(int node) {
     int current = node;
     while (current >= 0) {
@@ -231,6 +240,7 @@ void BvhTree::FixUpwardTree(int node) {
     }
 }
 
+// Replace a leaf bound and propagate unions without changing topology.
 void BvhTree::RefitLeaf(int leaf, const AABB& aabb) {
     if (leaf < 0 || leaf >= static_cast<int>(m_nodes.size()) || !m_nodes[leaf].active) {
         return;
@@ -239,10 +249,12 @@ void BvhTree::RefitLeaf(int leaf, const AABB& aabb) {
     FixUpwardTree(m_nodes[leaf].parent);
 }
 
+// Reinsert saved fat leaves in map iteration order and reset the reinsertion counter.
 void BvhTree::Rebuild() {
     // Snapshot the leaf data, then rebuild from an empty tree. Starting from an
     // empty node pool avoids index collisions between fresh internal nodes and
     // not-yet-reinserted leaves that would corrupt the topology (cycles).
+    // Preserve body identity and fat bounds while the node pool is cleared.
     struct LeafData {
         uint32_t bodyId;
         AABB aabb;
@@ -271,6 +283,7 @@ void BvhTree::Rebuild() {
     m_updatesSinceRebuild = 0;
 }
 
+// Accumulate AABB area=2*(xy+yz+zx) over active nodes and leaves separately.
 void BvhTree::ComputeSurfaceAreas(double& total, double& leaves) const {
     total = 0.0;
     leaves = 0.0;
@@ -286,6 +299,7 @@ void BvhTree::ComputeSurfaceAreas(double& total, double& leaves) const {
     }
 }
 
+// Return the active-node sum without altering query metrics.
 double BvhTree::TotalNodeSurfaceArea() const {
     double total = 0.0;
     double leaves = 0.0;
@@ -293,6 +307,7 @@ double BvhTree::TotalNodeSurfaceArea() const {
     return total;
 }
 
+// Return the active-leaf sum without altering query metrics.
 double BvhTree::LeafSurfaceArea() const {
     double total = 0.0;
     double leaves = 0.0;
