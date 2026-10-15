@@ -40,15 +40,18 @@ Layering rules:
 
 ### Core & Game Loop
 - `Engine` as the top-level entry: window/renderer assembly and lifecycle management.
-- `GameLoop` orchestrator: fixed-timestep accumulator plus variable-timestep update stages, with render drive.
+- `GameLoop` orchestrator: variable/fixed update callbacks and render drive, consuming a single `Time` sample.
 - Unified input service: keyboard/mouse state sampling with per-frame event caching, fed by GLFW callbacks.
-- Time service: delta time, elapsed time, and FPS statistics (the fixed-step accumulator lives in `GameLoop`).
+- Time service: monotonic clock, clamped simulation delta/total time, wall-clock elapsed time/FPS, and the fixed-step accumulator. `Engine` samples it once before frame work; standalone `GameLoop::Tick` samples it itself.
 
 ### ECS
 - Header-only implementation under `Runtime/include/ECS`.
-- Entity handles as stable numeric IDs with pooled allocation and free-list reuse (generation is tracked inside the pool; stale-handle validation is not enforced yet).
-- Type-erased component pools keyed by `std::type_index`, storing components in per-entity-indexed vectors.
-- Single-component queries; systems updated in registration order via the system manager.
+- 64-bit entity handles (32-bit index + 32-bit generation), with stale-handle validation and free-list reuse.
+- Archetype storage groups entities by sorted component signatures, with contiguous typed columns and swap-and-pop row removal. Adding/removing a component migrates the entity.
+- `View<Ts...>().Each(callback)` iterates matching archetypes without entity snapshots or per-entity lookups; callbacks receive `(Entity, Ts&...)` (const references for const registries). `EntitiesWith<Ts...>()` remains available as an unordered entity snapshot.
+- Component references can be invalidated by structural changes; do not retain them across entity creation, destruction, or component addition/removal. Structural changes inside `View::Each` throw `std::logic_error`; gather handles and apply changes after iteration. Components must be unqualified types with noexcept move construction/assignment.
+- Invalid/stale component access or modification throws `std::invalid_argument`; missing component access throws `std::out_of_range`. Duplicate additions and missing removals on live entities remain no-ops.
+- Systems updated in registration order via the system manager.
 - Synchronous publish/subscribe `EventBus` for cross-system communication.
 - `World` facade aggregating registry, system manager, and event bus.
 

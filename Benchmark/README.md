@@ -1,4 +1,38 @@
-# Physics Benchmark
+# Benchmarks
+
+## ECS archetype iteration
+
+```powershell
+cmake --build --preset release-o3 --target ECSBenchmark
+.\MyGame\ECSBenchmark.exe
+```
+
+The headless benchmark creates 100,000 entities with Transform2D/Velocity2D,
+then performs 200 movement passes using `View::Each`. JSON stdout contains
+storage/query names, entity count, iterations, update milliseconds, and checksum.
+Setup and checksum traversal are excluded from the timed region; the process
+fails if the checksum differs from 60,000,000.
+
+With `BUILD_TESTING=ON`, CTest registers `ECSBenchmark.Checksum` (60-second
+timeout). Both Linux and Windows CI/release jobs execute it with the test suite;
+elapsed time is informational, not a machine-dependent performance gate.
+Run it locally with `ctest --test-dir Build -R "^ECSBenchmark[.]Checksum$" --output-on-failure --no-tests=error`.
+
+Local MinGW 13.1 Release-O3 comparison (2026-10-09), three runs each:
+
+| Implementation and query | Update time (ms) | Median (ms) |
+| --- | --- | --- |
+| Previous indexed optional pools + entity snapshots/Has/Get | 2115.54 / 2052.45 / 2034.48 | 2052.45 |
+| Archetype typed columns + View::Each | 7.9474 / 9.3228 / 8.0493 | 8.0493 |
+
+Both workloads use the same entity count, update arithmetic, iteration count,
+compiler configuration, and final checksum. This compares the complete query
+hot path (storage **and** API), not storage alone; it does not measure structural
+churn, mixed archetypes, startup, memory usage, or whole-frame performance.
+The local median speedup is approximately 255x for this homogeneous microbenchmark;
+rerun on the target machine before drawing broader performance conclusions.
+
+## Physics Benchmark
 
 Headless deterministic workload for collision and solver baselines.
 

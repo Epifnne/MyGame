@@ -1,7 +1,9 @@
 // Engine/include/Core/GameLoop.h
 #pragma once
 
-#include <chrono>
+#include "Core/Time.h"
+#include <cstddef>
+#include <cstdint>
 #include <type_traits>
 #include <utility>
 
@@ -14,71 +16,62 @@ enum class GameLoopState : uint8_t {
     Stopped
 };
 
-template<typename UpdateFn, typename RenderFn, typename FixedUpdateFn = void>
+template<typename UpdateFn, typename RenderFn, typename FixedUpdateFn = std::nullptr_t>
 class GameLoop {
 public:
-    GameLoop(UpdateFn update, RenderFn render, FixedUpdateFn fixedUpdate = nullptr)
-        : m_update(update)
-        , m_render(render)
-        , m_fixedUpdate(fixedUpdate)
-        , m_fixedTimeStep(1.0f / 30.0f) // 30 FPS default
-        , m_maxDeltaTime(0.033f) // 30 FPS limit
+    GameLoop(UpdateFn update, RenderFn render, FixedUpdateFn fixedUpdate = nullptr,
+             Time& time = Time::Get())
+        : m_update(std::move(update))
+        , m_render(std::move(render))
+        , m_fixedUpdate(std::move(fixedUpdate))
+        , m_time(time)
     {}
     
-    void Start() {
+    void Start(Time::Clock::time_point now = Time::Clock::now()) {
         m_state = GameLoopState::Running;
-        m_lastTime = std::chrono::high_resolution_clock::now();
-        m_accumulator = 0.0f;
+        m_time.Reset(now);
     }
     
     void Stop() { m_state = GameLoopState::Stopped; }
     void Pause() { if (m_state == GameLoopState::Running) m_state = GameLoopState::Paused; }
-    void Resume() { if (m_state == GameLoopState::Paused) m_state = GameLoopState::Running; }
+    void Resume(Time::Clock::time_point now = Time::Clock::now()) {
+        if (m_state == GameLoopState::Paused) {
+            m_time.Rebase(now);
+            m_state = GameLoopState::Running;
+        }
+    }
     
     GameLoopState GetState() const { return m_state; }
     
-    void Tick() {
+    void Tick(Time::Clock::time_point now = Time::Clock::now()) {
         if (m_state != GameLoopState::Running) return;
-        
-        auto currentTime = std::chrono::high_resolution_clock::now();
-        float deltaTime = std::chrono::duration<float>(currentTime - m_lastTime).count();
-        m_lastTime = currentTime;
-        
-        if (deltaTime > m_maxDeltaTime) {
-            deltaTime = m_maxDeltaTime;
-        }
-        
-        m_update(deltaTime);
-        
-        if constexpr (!std::is_same_v<FixedUpdateFn, void>) {
-            m_accumulator += deltaTime;
-            while (m_accumulator >= m_fixedTimeStep) {
-                m_fixedUpdate(m_fixedTimeStep);
-                m_accumulator -= m_fixedTimeStep;
+        m_time.Update(now);
+        TickCurrentFrame();
+    }
+
+    // Engine samples Time once before frame work; standalone users call Tick().
+    void TickCurrentFrame() {
+        if (m_state != GameLoopState::Running) return;
+        m_update(m_time.GetDeltaTime());
+        if constexpr (!std::is_same_v<FixedUpdateFn, std::nullptr_t>) {
+            while (m_time.ConsumeFixedStep()) {
+                m_fixedUpdate(m_time.GetFixedDeltaTime());
             }
         }
-        
         m_render();
-        m_frameCount++;
     }
     
-    void SetFixedTimeStep(float step) { m_fixedTimeStep = step; }
-    void SetMaxDeltaTime(float maxDt) { m_maxDeltaTime = maxDt; }
-    int GetFrameCount() const { return m_frameCount; }
+    void SetFixedTimeStep(float step) { m_time.SetFixedTimeStep(step); }
+    void SetMaxDeltaTime(float maxDt) { m_time.SetMaxDeltaTime(maxDt); }
+    uint64_t GetFrameCount() const { return m_time.GetFrameCount(); }
     
 private:
     UpdateFn m_update;
     RenderFn m_render;
     FixedUpdateFn m_fixedUpdate;
     
-    using Clock = std::chrono::high_resolution_clock;
-    Clock::time_point m_lastTime;  // for delta time calculation
-    
+    Time& m_time;
     GameLoopState m_state = GameLoopState::Stopped;
-    float m_fixedTimeStep;  // fixed time step for fixed updates
-    float m_maxDeltaTime; // to prevent spiral of death
-    float m_accumulator = 0.0f; // for fixed update timing
-    int m_frameCount = 0; // total frames since start
 };
 
 }// namespace Core
@@ -96,11 +89,13 @@ auto MakeGameLoop(UpdateFn&& update, RenderFn&& render) {
 }
 
 template<typename UpdateFn, typename RenderFn, typename FixedUpdateFn>
-auto MakeGameLoop(UpdateFn&& update, RenderFn&& render, FixedUpdateFn&& fixedUpdate) {
+auto MakeGameLoop(UpdateFn&& update, RenderFn&& render, FixedUpdateFn&& fixedUpdate,
+                  Time& time = Time::Get()) {
     using U = std::decay_t<UpdateFn>;
     using R = std::decay_t<RenderFn>;
     using F = std::decay_t<FixedUpdateFn>;
-    return GameLoop<U, R, F>(std::forward<UpdateFn>(update), std::forward<RenderFn>(render), std::forward<FixedUpdateFn>(fixedUpdate));
+    return GameLoop<U, R, F>(std::forward<UpdateFn>(update), std::forward<RenderFn>(render),
+                           std::forward<FixedUpdateFn>(fixedUpdate), time);
 }
 
 } // namespace Core

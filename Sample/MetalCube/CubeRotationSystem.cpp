@@ -10,20 +10,12 @@ using Runtime::ECS::Components::Rotation;
 using Runtime::ECS::Components::Transform3D;
 
 void CubeRotationSystem::Update(Runtime::ECS::World& world, float dt) {
-    auto entities = world.RegistryRef().EntitiesWith<Rotation>();
-    for (auto entity : entities) {
-        if (!world.RegistryRef().HasComponent<Transform3D>(entity)) {
-            continue;
-        }
-        if (!world.RegistryRef().HasComponent<Components::CubeRenderComponent>(entity)) {
-            continue;
-        }
-
-        auto& transform = world.RegistryRef().GetComponent<Transform3D>(entity);
-        auto& rotation = world.RegistryRef().GetComponent<Rotation>(entity);
+    world.View<Rotation, Transform3D, Components::CubeRenderComponent>().Each(
+        [dt](Runtime::ECS::Entity, Rotation& rotation, Transform3D& transform,
+             Components::CubeRenderComponent&) {
         rotation.angle += rotation.speed * dt;
         transform.rotationEuler = rotation.axis * rotation.angle;
-    }
+    });
 }
 
 } // namespace Systems

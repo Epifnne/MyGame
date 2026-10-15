@@ -14,6 +14,7 @@ public:
 
 	[[nodiscard("created entity must be retained for later access or destruction")]] Entity CreateEntity() { return m_registry.CreateEntity(); }
 	void DestroyEntity(Entity e) { m_registry.DestroyEntity(e); }
+	[[nodiscard]] bool IsAlive(Entity e) const { return m_registry.IsAlive(e); }
 
 	template<typename T, typename... Args>
 	void AddComponent(Entity e, Args&&... args) { m_registry.AddComponent<T>(e, std::forward<Args>(args)...); }
@@ -21,10 +22,20 @@ public:
 	template<typename T>
 	[[nodiscard]] bool HasComponent(Entity e) const { return m_registry.HasComponent<T>(e); }
 
+	template<typename T>
+	void RemoveComponent(Entity e) { m_registry.RemoveComponent<T>(e); }
+
+	template<typename... Ts>
+	[[nodiscard]] auto View() { return m_registry.View<Ts...>(); }
+
+	template<typename... Ts>
+	[[nodiscard]] auto View() const { return m_registry.View<Ts...>(); }
+
 	void Update(float dt) { m_systems.UpdateAll(m_registry, dt); }
 
 	[[nodiscard]] SystemManager& Systems() { return m_systems; }
 	[[nodiscard]] Registry& RegistryRef() { return m_registry; }
+	[[nodiscard]] const Registry& RegistryRef() const { return m_registry; }
 	[[nodiscard]] EventBus& Events() { return m_events; }
 
 private:
@@ -35,4 +46,3 @@ private:
 
 } // namespace ECS
 } // namespace Runtime
-

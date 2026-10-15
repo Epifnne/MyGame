@@ -44,6 +44,7 @@ gtest_discover_tests(ECS_Test)
 add_executable(CoreTypes_Test
     Common/CoreTypes_Test.cpp
     Common/JobSystem_Test.cpp
+    Common/Time_Test.cpp
 )
 set_test_output_dir(CoreTypes_Test)
 

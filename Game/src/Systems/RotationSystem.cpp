@@ -7,11 +7,10 @@ namespace Game {
 namespace Systems {
 
 void RotationSystem::Update(Runtime::ECS::Registry& registry, float dt) {
-    auto entities = registry.EntitiesWith<Components::RotationComponent>();
-    for (auto entity : entities) {
-        auto& rotation = registry.GetComponent<Components::RotationComponent>(entity);
+    registry.View<Components::RotationComponent>().Each(
+        [dt](Runtime::ECS::Entity, Components::RotationComponent& rotation) {
         rotation.angle += rotation.speed * dt;
-    }
+    });
 }
 
 } // namespace Systems

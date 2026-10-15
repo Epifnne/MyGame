@@ -71,17 +71,17 @@ Core 采用以下主循环与基础服务流程：
 
 1. 初始化引擎上下文与子系统。
 2. 采集平台输入并更新输入状态。
-3. 驱动固定步长与可变步长更新阶段。
-4. 维护时间信息并计算帧间隔。
+3. 每帧工作开始前统一采样 Time，维护帧间隔、固定步长累加与统计。
+4. 使用同一次采样驱动可变步长和固定步长更新阶段。
 5. 调度游戏循环并处理退出条件。
 6. 执行关闭流程与资源回收。
 
 ### 3.2 每个头文件（类）预期职责
 
 - Engine.h：引擎总入口；负责 Window/Renderer 装配、生命周期管理与对上层启动接口。
-- GameLoop.h：主循环编排器；组织逐帧可变步长更新、固定步长更新与渲染驱动（退出/关闭流程由 Engine 与 Game 层完成，GameLoop 自身无 shutdown 阶段）。
+- GameLoop.h：主循环编排器；消费 Time 的帧间隔与固定步长，组织更新与渲染，不再持有计时状态。独立使用时 Tick 自行采样；Engine 采样后调用 TickCurrentFrame，避免重复计时（关闭流程仍由 Engine 与 Game 层完成）。
 - Input.h：输入服务接口；统一键鼠状态采样、查询与帧内事件缓存（由 Window 的 GLFW 回调注入；不支持手柄）。
-- Time.h：时间服务接口；提供 deltaTime、累计运行时间与 FPS 统计。固定步长累加器由 GameLoop 维护，Time 当前未接入 Engine 主循环。
+- Time.h：统一时间服务，使用 steady_clock；提供截断后的模拟 deltaTime/累计模拟时间、未截断的墙钟 elapsedTime/FPS、帧数及固定步长累加器。默认最大 deltaTime 为 0.033 秒，固定步长为 1/30 秒；截断不等同于限制渲染帧率。Start 重置统计，Resume 重置采样点以排除暂停时长，保留固定步长余量。单例用于一个活动引擎循环；独立循环可注入单独的 Time 实例。
 
 ## 4. Runtime/ECS 头文件职责
 
@@ -99,16 +99,24 @@ ECS 采用以下数据与调度流程：
 ### 4.2 每个头文件（类）预期职责
 
 - World.h：ECS 世界门面；聚合 Registry、SystemManager 与事件总线，Update 按注册顺序驱动系统。
-- Registry.h：注册中心；负责实体与组件关系管理、单组件查询（EntitiesWith<T>）与实体销毁时的组件清理。
-- Entity.h：实体句柄抽象；当前为 uint32_t 数值 ID，句柄本身不携带代际。
-- EntityPool.h：实体池；负责实体 ID 分配、空闲列表复用与池内代际递增（销毁后复用的旧句柄不会失效，句柄级代际校验未实现）。
+- Registry.h：注册中心；按有序组件类型签名管理 archetype，维护实体的 archetype/row 定位，组件增删时迁移实体；提供多组件 View 与兼容快照查询 EntitiesWith。
+- Entity.h：64 位实体句柄，低 32 位为 index、高 32 位为 generation，0 为 NullEntity。类型扩大后，外部持久化或网络协议不能再按 uint32_t 编码实体；当前 ECS 调用方没有实体序列化路径。
+- EntityPool.h：实体池；分配与复用 index，校验存活位及句柄代际；销毁后旧句柄不可再访问复用的实体。代际耗尽的槽位永久退役，避免回绕。
 - Component.h：组件基抽象与类型标识；定义组件类型元信息与通用访问约定。
-- ComponentPool.h：组件池；类型擦除接口 + 按实体 ID 索引的 vector<optional<T>> 存储（非紧凑连续存储）。
+- Archetype.h：组件列的类型擦除接口与 archetype 存储；同一组件组合共享实体数组和各类型 vector<T>，按行对齐，删除使用 swap-and-pop 并修复被交换实体的定位。列按几何倍增扩容，支持 move-only 与过对齐组件；要求组件 noexcept 移动构造/赋值。空 archetype 和列容量保留用于后续复用。
 - System.h：系统基接口；定义 Update(Registry&, float) 更新接口。
 - SystemPool.h：系统容器（SystemManager）；按注册顺序逐个更新系统，当前无阶段分组与启停状态。
 - EventBus.h：事件总线；同步发布/订阅机制（Emit 直接在调用栈执行回调），无事件队列与异步分发。
 
 说明：ECS 当前为头文件内联实现，Runtime/src/ECS 为空目录。
+
+查询使用 `registry.View<A, B>().Each([](Entity e, A& a, B& b) { ... });`；
+const Registry/World 的视图只提供 const 组件引用。查询只在 archetype 层检查组件组合，
+内层按连续列逐行访问，不构建实体副本。`EntitiesWith<A, B>()` 则返回无序句柄快照，
+可用于先收集后执行结构修改。创建/销毁实体或增删组件可能使组件引用失效，不应跨结构修改保留引用。
+View::Each 期间禁止结构修改（含嵌套视图），违规抛出 logic_error；回调异常后迭代保护会自动解除。
+无效/过期句柄的组件访问或修改抛出 invalid_argument，缺失组件访问抛出 out_of_range；
+DestroyEntity 对无效句柄保持幂等，HasComponent/IsAlive 对其返回 false。
 
 ## 5. Runtime/Graphics 头文件职责
 

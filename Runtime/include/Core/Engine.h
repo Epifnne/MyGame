@@ -86,13 +86,16 @@ private:
         auto& input = Input::Get();
         
         while (m_isRunning && gameLoop.GetState() != GameLoopState::Stopped) {
+            if (gameLoop.GetState() == GameLoopState::Running) {
+                Time::Get().Update();
+            }
             input.BeginFrame();
 
             if (m_window) {
                 ProcessWindowEvents();
             }
 
-            gameLoop.Tick();
+            gameLoop.TickCurrentFrame();
             input.UpdateMouseDelta();
         }
     }

@@ -17,25 +17,16 @@ void CubeRenderSystem::Render(Runtime::ECS::World& world,
                               Runtime::Graphics::Mesh& mesh,
                               Runtime::Graphics::Material& material,
                               const Runtime::Graphics::Camera& camera) {
-    auto entities = world.RegistryRef().EntitiesWith<Components::CubeRenderComponent>();
-    for (auto entity : entities) {
-        if (!world.RegistryRef().HasComponent<Transform3D>(entity)) {
-            continue;
-        }
-        if (!world.RegistryRef().HasComponent<Rotation>(entity)) {
-            continue;
-        }
-
-        const auto& transform = world.RegistryRef().GetComponent<Transform3D>(entity);
-        const auto& rotation = world.RegistryRef().GetComponent<Rotation>(entity);
-
+    world.View<Components::CubeRenderComponent, Transform3D, Rotation>().Each(
+        [&](Runtime::ECS::Entity, const Components::CubeRenderComponent&,
+            const Transform3D& transform, const Rotation& rotation) {
         glm::mat4 model = glm::mat4(1.0f);
         model = glm::translate(model, transform.position);
         model = glm::rotate(model, rotation.angle, rotation.axis);
         model = glm::scale(model, transform.scale);
 
         renderer.Submit(mesh, material, model);
-    }
+    });
 
     renderer.Flush(camera);
 }

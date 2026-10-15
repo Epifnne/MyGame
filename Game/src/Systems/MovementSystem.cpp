@@ -10,6 +10,11 @@ void MovementSystem::UpdateEntity(Runtime::ECS::World& world, Runtime::ECS::Enti
     auto& transform = world.RegistryRef().GetComponent<Components::TransformComponent>(entity);
     const auto& velocity = world.RegistryRef().GetComponent<Components::VelocityComponent>(entity);
 
+    Update(transform, velocity, dt);
+}
+
+void MovementSystem::Update(Components::TransformComponent& transform,
+                            const Components::VelocityComponent& velocity, float dt) {
     transform.x += velocity.vx * dt;
     transform.y += velocity.vy * dt;
 }

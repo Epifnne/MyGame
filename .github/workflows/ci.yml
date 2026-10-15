@@ -131,7 +131,7 @@ jobs:
           fi
 
       - name: Run tests
-        run: ctest --test-dir Build --output-on-failure
+        run: ctest --test-dir Build --output-on-failure --no-tests=error
 
       - name: Note about DemoApp
         run: |

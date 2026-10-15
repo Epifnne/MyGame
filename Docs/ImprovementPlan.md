@@ -2,20 +2,23 @@
 
 本文档记录代码核对（2026-09-25）中发现的已知缺口及对应的优化方向，按模块组织。每条标注：现状、优化方向、预期收益与优先级建议。
 
+2026-10-09 实施状态：已完成核心范围 1.1、2.1、2.2、2.3；2.3 按项目要求采用 archetype 而非原定 sparse-set。1.2、2.4、2.5、2.6 与可选的时间百分位统计仍保留为后续工作。
+
 ## 1. Core
 
-### 1.1 Time 服务未接入主循环
+### 1.1 Time 服务统一接入主循环（已完成）
 
 **现状**
 
-- `Time` 提供 deltaTime、累计运行时间与 FPS 统计（[Time.h](../Runtime/include/Core/Time.h)），但 `Engine::MainLoop` 从未调用 `Time::Get().Update()`，实例空转。
-- 固定步长累加器位于 `GameLoop::Tick`（[GameLoop.h](../Runtime/include/Core/GameLoop.h#L40-L63)），而 Time 自身没有固定步长能力。两处时间逻辑割裂。
+- [Time.h](../Runtime/include/Core/Time.h) 统一维护 steady_clock 采样、截断后的模拟帧间隔/累计时间、墙钟累计时间/FPS、帧数及固定步长累加器。
+- [Engine::MainLoop](../Runtime/include/Core/Engine.h) 每帧工作开始前更新 Time，随后由 GameLoop::TickCurrentFrame 消费；独立 GameLoop::Tick 则自行更新所用 Time。避免两个时钟及重复采样。
+- Start 重置计时，Resume 重新设置采样点以排除暂停时长；固定步长和最大帧间隔校验为有限正值。默认步长、截断值及 update → fixedUpdate → render 顺序保持不变。
 
 **优化方向**
 
-1. 将固定步长累加器从 `GameLoop` 下沉到 `Time`：`Time::Update(now)` 内部维护 accumulator，对外提供 `DeltaTime()` / `FixedDeltaTime()` / `AccumulatedTime()`。GameLoop 只做调度，不再持有时间状态。
-2. `Engine::MainLoop` 每帧首先调用 `Time::Get().Update()`，游戏逻辑与渲染统一从 Time 读取，消除多源时间。
-3. 可选：Time 内增加帧时间直方图/百分位统计（p50/p95/p99），与 benchmark 体系打通。
+1. 已完成：固定累加器下沉到 Time，提供 GetDeltaTime / GetFixedDeltaTime / GetAccumulatedTime / ConsumeFixedStep。
+2. 已完成：Engine 与回调共享同一次帧采样，FPS 使用未截断的墙钟时间，避免低帧率统计失真。
+3. 未实施的可选项：帧时间直方图/百分位统计（p50/p95/p99），与 benchmark 体系打通。
 
 **收益**：时间源唯一化；GameLoop 瘦身；物理与动画等系统可各自按固定/可变步长消费同一时钟。
 
@@ -31,42 +34,42 @@
 
 ## 2. ECS
 
-**总体现状**：全部头文件内联实现，`Runtime/src/ECS` 为空。功能处于"可用原型"水平：单组件查询、注册顺序驱动系统、同步 EventBus。
+**总体现状**：全部头文件内联实现，`Runtime/src/ECS` 为空。已具备代际实体句柄、archetype 列式存储、多组件视图；系统仍按注册顺序驱动，EventBus 仍同步分发。
 
-### 2.1 实体代际校验未生效
+### 2.1 实体代际校验（已完成）
 
-**现状**：`Entity` 是裸 `uint32_t`（[Entity.h](../Runtime/include/ECS/Entity.h#L9-L10)）；`EntityPool` 销毁时递增内部 generation 但 `IsAlive` 只查 ID 范围与存活位（[EntityPool.h](../Runtime/include/ECS/EntityPool.h#L35-L41)）。销毁并复用后，旧句柄数值相同，会再次判定为 alive——**这是真实的悬空句柄 bug 温床**。
+**现状**：[Entity.h](../Runtime/include/ECS/Entity.h) 使用 uint64_t：低 32 位 index + 高 32 位 generation；EntityPool::IsAlive 同时校验范围、存活位与代际。销毁/复用后旧句柄失效，代际耗尽的槽位永久退役。
 
 **优化方向**
 
-1. 将 generation 打包进 `Entity` 句柄本身（经典方案：`uint32_t = 20bit index + 12bit generation`，或升级到 `uint64_t` 换取更宽的代数位）。
-2. `IsAlive` 同时比较 index 存活位与句柄 generation 是否等于池内当前 generation。
-3. 配套更新 `NullEntity`、哈希与序列化路径。
+1. 已完成：句柄打包、EntityIndex / EntityGeneration / MakeEntity 辅助函数，NullEntity 保持为 0。
+2. 已完成：Registry/World 暴露 IsAlive，所有组件访问/修改验证句柄；无效访问抛出 invalid_argument，不再静默写入。
+3. 当前调用方使用完整 Entity 类型及标准整数哈希，无实体序列化路径。未来新增持久化/网络编码须使用完整 64 位句柄，不能截断为旧 uint32_t。
 
 **收益**：消除悬空实体引用的静默错误；这是 ECS 正确性的底线，其他优化都建立在此之上。
 
 **优先级**：高。代价小、收益大，且越晚改波及面越大（序列化、网络、UI 事件都会持有 Entity）。
 
-### 2.2 多组件查询与视图缺失
+### 2.2 多组件查询与视图（已完成）
 
-**现状**：Registry 仅支持 `EntitiesWith<T>()` 单组件查询（[Registry.h](../Runtime/include/ECS/Registry.h#L61-L65)）。系统若需"同时拥有 A 和 B 的实体"，只能查一个再手动过滤。
+**现状**：[Registry.h](../Runtime/include/ECS/Registry.h) 提供 View<Ts...>().Each，按 archetype 匹配组件交集，直接遍历组件列；const 视图传递 const 引用。EntitiesWith<Ts...> 保留为无序句柄快照。游戏移动/旋转及 MetalCube 更新/渲染已迁移。
 
 **优化方向**
 
-1. 实现 `View<Ts...>`：选择池最小的组件类型作为驱动（size-driven iteration），其余池做存在性检查。
-2. 若配合 2.3 的紧凑存储改造，可进一步做 SoA 连续迭代。
+1. 已完成：改用 archetype 级签名匹配，内层无逐实体存在性检查/定位查找，无快照分配。
+2. 已完成：View::Each 期间禁止结构修改并抛出 logic_error；如需增删，先收集句柄，迭代后再执行。嵌套视图和回调异常均有迭代保护。
 
 **收益**：系统代码去样板化；为阶段调度（2.4）提供查询基础。
 
 **优先级**：中高。每写一个多组件系统都在为这个缺口付利息。
 
-### 2.3 组件存储非紧凑
+### 2.3 archetype 紧凑存储（已完成，替代 sparse-set 方案）
 
-**现状**：组件存于 `std::vector<std::optional<T>>`，按实体 ID 索引（[ComponentPool.h](../Runtime/include/ECS/ComponentPool.h#L24-L30)）。实体 ID 稀疏时内存空洞大；`optional` 引入额外开销；`Entities()` 返回副本。
+**现状**：[Archetype.h](../Runtime/include/ECS/Archetype.h) 按有序组件类型签名分组，实体数组与每种组件的 vector<T> 按行对齐，不再使用按实体 ID 索引的 optional 池。
 
-**优化方向**：改造为 sparse-set（dense array + sparse index），删除时 swap-and-pop，保持 dense 数组连续。文件底部注释（L48-53）已有该设计草案。
+**实施内容**：组件增删迁移到目标 archetype，保留共同组件；源行 swap-and-pop 并修复被交换实体的 row。迁移前完成组件构造与目标列容量准备，要求组件 noexcept 移动构造/赋值，支持 move-only 和过对齐类型。组件引用可能因结构修改失效；空 archetype 与列容量保留复用。
 
-**收益**：迭代缓存友好、删除 O(1)、内存占用与活跃实体数成正比。
+**收益**：组件列连续，去除 ID 稀疏空洞；行删除与该 archetype 的组件种数成正比，不再扫描实体列表。性能对照见 [Benchmark README](../Benchmark/README.md)：相同 10 万实体/200 轮更新、Release-O3 三次运行中位数，旧查询热路径 2052.45ms，新 View 热路径 8.0493ms。此结果包含存储与查询 API 共同收益，不代表整帧或结构迁移性能。
 
 **优先级**：中。性能向优化，建议在 2.1/2.2 之后做（接口稳定后换存储实现）。
 
@@ -108,17 +111,15 @@
 ## 3. 关联建议（实施顺序）
 
 ```text
-2.1 代际校验（正确性底线）
-  └→ 2.2 多组件视图（接口定型）
-       └→ 2.3 sparse-set 存储（接口稳定后的内部替换）
-1.1 Time 收口（独立进行，随时可做）
+2.1 代际校验 → 2.2 多组件视图 + 2.3 archetype 存储（已完成）
+1.1 Time 收口（已完成）
 2.4 阶段调度 / 2.5 事件队列（系统变多后按需）
 2.6 编译期下沉（项目变大后按需）
 ```
 
 ## 4. 测试要求
 
-- 2.1：新增"销毁-复用后旧句柄失效"用例（现有 [RuntimeECS_SmokeTest.cpp](../Tests/ECS/RuntimeECS_SmokeTest.cpp) 未覆盖）。
-- 2.2：多组件查询的交集正确性与空池边界用例。
-- 2.3：性能基准前后对照（建议纳入 Benchmark/ 现有 JSON 基线体系）。
-- 2.5：事件队列的"同帧 emit 不立即触发回调"与重入防护用例。
+- 已覆盖 2.1/2.2/2.3：[RuntimeECS_SmokeTest.cpp](../Tests/ECS/RuntimeECS_SmokeTest.cpp) 验证旧句柄、组件迁移/swap 行修复、move-only/对齐、查询交集/空查询/const、结构修改防护、构造异常，以及 5000 次随机操作与参考模型对照。
+- 已覆盖 1.1：[Time_Test.cpp](../Tests/Common/Time_Test.cpp) 验证截断与墙钟 FPS、固定步长余量、同源回调/无重复采样、暂停/恢复/重启及非法参数。
+- [ECSBenchmark.cpp](../Benchmark/ECSBenchmark.cpp) 提供带校验和的 JSON 查询微基准；前后对照记录见 Benchmark README。
+- 2.5 后续实施时补充：事件队列的"同帧入队不立即触发回调"与重入防护用例。

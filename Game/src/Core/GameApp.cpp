@@ -734,12 +734,11 @@ void GameApp::Update(float dt, const Runtime::Core::Input& input) {
         m_squashVelocity = 0.0f;
     }
 
-    auto movementEntities = m_world.RegistryRef().EntitiesWith<Components::VelocityComponent>();
-    for (auto entity : movementEntities) {
-        if (m_world.RegistryRef().HasComponent<Components::TransformComponent>(entity)) {
-            Systems::MovementSystem::UpdateEntity(m_world, entity, dt);
-        }
-    }
+    m_world.View<Components::VelocityComponent, Components::TransformComponent>().Each(
+        [dt](Runtime::ECS::Entity, const Components::VelocityComponent& velocity,
+             Components::TransformComponent& transform) {
+            Systems::MovementSystem::Update(transform, velocity, dt);
+        });
 
     m_world.Update(dt);
 

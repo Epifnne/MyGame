@@ -1,59 +1,47 @@
-// Engine/include/Core/Time.h
 #pragma once
-#include <chrono>
 
-namespace Runtime {
-namespace Core {
+#include <chrono>
+#include <cstdint>
+
+namespace Runtime::Core {
 
 class Time {
 public:
+    using Clock = std::chrono::steady_clock;
+
     static Time& Get() {
         static Time instance;
         return instance;
     }
 
-    void Update() {
-        auto currentTime = std::chrono::high_resolution_clock::now();
-        m_deltaTime = std::chrono::duration<float>(currentTime - m_lastFrameTime).count();
-        
-        // limit max deltaTime
-        if (m_deltaTime > m_maxDeltaTime) {
-            m_deltaTime = m_maxDeltaTime;
-        }
-        
-        m_lastFrameTime = currentTime;
-        m_totalTime += m_deltaTime;
-        
-        // FPS calculation
-        m_frameCount++;
-        m_fpsAccumulator += m_deltaTime;
-        if (m_fpsAccumulator >= 1.0f) {
-            m_currentFPS = m_frameCount;
-            m_frameCount = 0;
-            m_fpsAccumulator -= 1.0f;
-        }
-    }
-    
+    Time() { Reset(); }
+    void Reset(Clock::time_point now = Clock::now());
+    void Rebase(Clock::time_point now = Clock::now());
+    void Update(Clock::time_point now = Clock::now());
+    bool ConsumeFixedStep();
+    void SetFixedTimeStep(float step);
+    void SetMaxDeltaTime(float maxDt);
+
     float GetDeltaTime() const { return m_deltaTime; }
-    float GetTotalTime() const { return m_totalTime; }
+    double GetTotalTime() const { return m_totalTime; }
+    double GetElapsedTime() const { return m_elapsedTime; }
+    double GetAccumulatedTime() const { return m_accumulator; }
+    float GetFixedDeltaTime() const { return m_fixedTimeStep; }
     int GetFPS() const { return m_currentFPS; }
-    
+    uint64_t GetFrameCount() const { return m_frameCount; }
+
 private:
-    Time() = default;
-    
-    using Clock = std::chrono::high_resolution_clock;
-    Clock::time_point m_lastFrameTime = Clock::now();
-    
+    Clock::time_point m_lastFrameTime;
     float m_deltaTime = 0.0f;
-    float m_totalTime = 0.0f;
-    float m_maxDeltaTime = 0.033f;  // 30 FPS limit
-    
-    // FPS calculation
-    int m_frameCount = 0;
-    float m_fpsAccumulator = 0.0f;
+    float m_fixedTimeStep = 1.0f / 30.0f;
+    float m_maxDeltaTime = 0.033f;
+    double m_totalTime = 0.0;
+    double m_elapsedTime = 0.0;
+    double m_accumulator = 0.0;
+    double m_fpsAccumulator = 0.0;
+    uint64_t m_frameCount = 0;
+    uint64_t m_fpsFrameCount = 0;
     int m_currentFPS = 0;
 };
 
-
-}// namespace Core
-}// namespace Runtime
+} // namespace Runtime::Core

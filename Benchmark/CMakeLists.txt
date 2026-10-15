@@ -1,3 +1,15 @@
+add_executable(ECSBenchmark ECSBenchmark.cpp)
+target_link_libraries(ECSBenchmark PRIVATE RuntimeLib)
+target_compile_features(ECSBenchmark PRIVATE cxx_std_20)
+
+if(BUILD_TESTING)
+	add_test(NAME ECSBenchmark.Checksum COMMAND ECSBenchmark)
+	set_tests_properties(ECSBenchmark.Checksum PROPERTIES
+		LABELS "ECS;benchmark"
+		TIMEOUT 60
+	)
+endif()
+
 add_executable(PhysicsBenchmark
 	PhysicsBenchmark.cpp
 )
